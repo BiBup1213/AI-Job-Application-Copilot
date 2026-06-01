@@ -9,6 +9,9 @@ load_dotenv(BASE_DIR / ".env")
 
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-only-secret-key")
 DEBUG = os.getenv("DEBUG", "True").lower() == "true"
+AI_PROVIDER = os.getenv("AI_PROVIDER", "mock")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "")
 ALLOWED_HOSTS = [
     host.strip()
     for host in os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")

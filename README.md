@@ -31,6 +31,20 @@ The API runs at `http://127.0.0.1:8000/api/`.
 
 Keep this terminal running while using the frontend.
 
+AI services use a provider selector:
+
+```text
+AI_PROVIDER=mock
+OPENAI_API_KEY=
+OPENAI_MODEL=
+```
+
+The deterministic mock provider is the default. With `AI_PROVIDER=openai`,
+job matching can call OpenAI when `OPENAI_API_KEY` and `OPENAI_MODEL` are set.
+Document generation and email classification still delegate to mock behavior.
+If OpenAI configuration is missing, parsing/validation fails, or the provider
+errors, the backend logs a warning and falls back to mock. API keys are not logged.
+
 ## Frontend Setup
 
 ```bash
@@ -48,17 +62,27 @@ VITE_API_BASE_URL=http://127.0.0.1:8000
 
 If the backend is unavailable, the dashboard shows a clean error state instead of crashing.
 
-The sidebar uses React Router routes for Übersicht, Suchkampagnen, Gefundene Jobs, Bewerbungen, Mail-Zentrale, Follow-ups, Profil, and Einstellungen. Some secondary routes are still placeholders while the jobs and applications pages already use backend data.
+The sidebar uses React Router routes for Übersicht, Suchkampagnen, Gefundene Jobs, Bewerbungen, Mail-Zentrale, Follow-ups, Profil, and Einstellungen. Profil and Einstellungen remain placeholders; the core MVP workflow pages use backend data.
 
-Manual job import is available from the dashboard and `Gefundene Jobs` page. Imported jobs are stored through the backend and immediately evaluated with the deterministic mock matching service.
+## Current Features
 
-The `Bewerbungen` page lists backend applications with status filters, quick actions, follow-up dates, notes, and links into the document review/detail view.
+- Manual job import from the dashboard and `Gefundene Jobs` page. Imported jobs are stored through the backend and immediately evaluated with the deterministic mock matching service.
+- Campaign mock search with automatic deterministic job matching.
+- Human-in-the-loop application document review, editing, and approval.
+- Simulated Gmail draft creation after explicit E-Mail document approval.
+- `Bewerbungen` page with status filters, quick actions, follow-up dates, notes, and links into the document review/detail view.
+- `Mail-Zentrale` page with mock sync, reclassification, application linking, and explicit status-update suggestions.
+- `Follow-ups` page with due/planned follow-ups, German follow-up drafts, and explicit review/approval.
 
-The `Mail-Zentrale` page lists simulated mail messages, supports mock sync and reclassification, lets messages be linked to applications, and offers explicit status-update suggestions for linked applications.
+## Not Implemented Yet
 
-The `Follow-ups` page shows due and planned follow-ups, lets dates be set, creates German follow-up drafts, and reuses the document editor for explicit review and approval.
+- No real Gmail API integration.
+- No real job board scraping.
+- No real AI/LLM document generation, follow-up drafting, or mail classification.
+- No real email sending.
+- No authentication or multi-user profile management.
 
-Creating a simulated Gmail draft remains human-in-the-loop: the frontend opens a document review workflow where generated documents can be edited and explicitly approved before calling the mock Gmail draft endpoint.
+See `TESTING.md` for the manual MVP test checklist.
 
 ## Run Backend And Frontend Together
 
@@ -148,9 +172,42 @@ POST /api/mail/messages/{id}/classify/
 - Campaign runs create realistic mock job postings.
 - Job evaluation creates deterministic `JobMatch` entries.
 - Application document generation creates German cover letter and email drafts.
+- AI-like behavior is routed through `backend/ai_services/providers/mock.py`.
+- `backend/ai_services/providers/openai_provider.py` can use OpenAI for job matching only when explicitly configured.
 - Gmail draft creation is simulated only.
 - Mail sync and classification are mock-based.
-- No real AI API, job board scraping, Gmail API, email sending, or secrets are used.
+- No real job board scraping, Gmail API, email sending, or secrets are used.
+
+## Testing OpenAI Job Matching
+
+OpenAI matching is optional and disabled by default.
+
+1. Install backend requirements after pulling changes:
+
+   ```bash
+   cd backend
+   source .venv/bin/activate
+   pip install -r requirements.txt
+   ```
+
+2. Set local `.env` values:
+
+   ```text
+   AI_PROVIDER=openai
+   OPENAI_API_KEY=your-local-key
+   OPENAI_MODEL=gpt-4o-mini
+   ```
+
+3. Start the backend and evaluate a job:
+
+   ```bash
+   python manage.py runserver
+   ```
+
+   Then call `POST /api/jobs/{id}/evaluate/` from the frontend flow or an API client.
+
+Only job matching sends job data to OpenAI, and only when `AI_PROVIDER=openai`.
+Document generation, follow-up drafting, and mail classification remain mock-based.
 
 ## Demo Data
 

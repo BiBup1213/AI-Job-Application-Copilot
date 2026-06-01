@@ -59,7 +59,6 @@ import {
   getMailMessages,
   syncMail,
   updateMailMessage,
-  type EmailClassification,
   type EmailMessageDto,
 } from "./api/mail";
 import {
@@ -68,6 +67,34 @@ import {
   type Kpi,
   type StatusTone,
 } from "./mockDashboardData";
+import {
+  dateInputToDateTime,
+  dateInputValue,
+  daysSinceDate,
+  formatDate,
+  formatNullableDate,
+  isFollowUpDue,
+  relativeDate,
+} from "./utils/date";
+import {
+  applicationStatusLabel,
+  applicationStatusText,
+  applicationStatusTone,
+  canCreateReplyDraft,
+  classificationLabel,
+  classificationTone,
+  displaySender,
+  isApplicationFollowUpDue,
+  isFollowUpRelevant,
+  latestDocumentOfType,
+  latestMailForApplication,
+  matchesFollowUpFilter,
+  nextActionForStatus,
+  suggestedApplicationStatus,
+  suggestedMailAction,
+  type FollowUpFilterKey,
+} from "./utils/status";
+import { initialsFrom, logoForCompany, splitCsv, titleCase } from "./utils/text";
 
 type ActionState =
   | "idle"
@@ -160,7 +187,6 @@ type MailFilterKey =
   | "invitation"
   | "rejection"
   | "unknown";
-type FollowUpFilterKey = "all" | "due" | "planned" | "without_date" | "done";
 
 function cn(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
@@ -281,8 +307,6 @@ const followUpFilters: Array<{ key: FollowUpFilterKey; label: string }> = [
   { key: "without_date", label: "Ohne Datum" },
   { key: "done", label: "Erledigt" },
 ];
-
-const followUpIntervalDays = 7;
 
 export function App() {
   return (
@@ -3445,7 +3469,14 @@ function buildKpis(
     mailMessages.filter(
       (message) => message.application !== null && message.classification !== "unknown",
     ).length;
-  const followUpCount = kpis?.followups_due ?? countStatus(applications, ["follow_up_due"]);
+  const followUpCount =
+    kpis?.followups_due ??
+    applications.filter((application) =>
+      isApplicationFollowUpDue(
+        application,
+        latestMailForApplication(application.id, mailMessages),
+      ),
+    ).length;
   const newMatchingJobs =
     kpis?.new_matching_jobs ??
     jobs.filter((job) => (job.match?.score ?? 0) >= 75).length;
@@ -3596,7 +3627,12 @@ function buildTodayItems(
   const actionMailCount = mailMessages.filter((message) =>
     ["question", "invitation", "requires_action"].includes(message.classification),
   ).length;
-  const followUpCount = countStatus(applications, ["follow_up_due"]);
+  const followUpCount = applications.filter((application) =>
+    isApplicationFollowUpDue(
+      application,
+      latestMailForApplication(application.id, mailMessages),
+    ),
+  ).length;
   return [
     {
       title: `${draftCount} Entwürfe prüfen & fertigstellen`,
@@ -3626,212 +3662,6 @@ function countStatus(applications: ApplicationDto[], statuses: ApplicationStatus
   return applications.filter((application) => statuses.includes(application.status)).length;
 }
 
-function applicationStatusLabel(status: ApplicationStatus) {
-  const labels: Record<ApplicationStatus, string> = {
-    new: "Neu gefunden",
-    interesting: "Interessant",
-    draft_open: "Entwurf offen",
-    draft_approved: "Entwurf freigegeben",
-    gmail_draft_created: "Gmail-Entwurf",
-    applied: "Beworben",
-    response_received: "Antwort erhalten",
-    interview: "Interview",
-    rejected: "Absage",
-    follow_up_due: "Follow-up fällig",
-    closed: "Geschlossen",
-  };
-  return labels[status];
-}
-
-function applicationStatusText(status: string) {
-  if (isApplicationStatus(status)) return applicationStatusLabel(status);
-  return status || "Unbekannt";
-}
-
-function isApplicationStatus(status: string): status is ApplicationStatus {
-  return [
-    "new",
-    "interesting",
-    "draft_open",
-    "draft_approved",
-    "gmail_draft_created",
-    "applied",
-    "response_received",
-    "interview",
-    "rejected",
-    "follow_up_due",
-    "closed",
-  ].includes(status);
-}
-
-function applicationStatusTone(status: ApplicationStatus): StatusTone {
-  if (["applied", "interview", "draft_approved", "gmail_draft_created"].includes(status)) {
-    return "green";
-  }
-  if (["draft_open", "follow_up_due", "interesting"].includes(status)) {
-    return "orange";
-  }
-  if (status === "rejected" || status === "closed") return "red";
-  if (status === "response_received") return "blue";
-  return "orange";
-}
-
-function nextActionForStatus(status?: ApplicationStatus) {
-  if (!status || status === "new" || status === "interesting") return "Bewerbung erstellen";
-  if (status === "draft_open") return "Entwurf prüfen";
-  if (status === "draft_approved") return "Gmail-Entwurf erstellen";
-  if (status === "gmail_draft_created") return "Versand manuell prüfen";
-  if (status === "applied") return "Antwort abwarten";
-  if (status === "follow_up_due") return "Follow-up senden";
-  if (status === "response_received") return "Antwort prüfen";
-  if (status === "interview") return "Termin vorbereiten";
-  return "Details ansehen";
-}
-
-function classificationLabel(classification: EmailMessageDto["classification"]) {
-  const labels: Record<EmailMessageDto["classification"], string> = {
-    confirmation: "Eingangsbestätigung",
-    rejection: "Absage erkannt",
-    invitation: "Einladung",
-    question: "Antwort erforderlich",
-    follow_up: "Follow-up",
-    unknown: "Unbekannt",
-    requires_action: "Antwort erforderlich",
-  };
-  return labels[classification];
-}
-
-function classificationTone(classification: EmailMessageDto["classification"]): StatusTone {
-  if (classification === "confirmation" || classification === "invitation") return "green";
-  if (classification === "question" || classification === "requires_action") return "orange";
-  if (classification === "rejection") return "red";
-  return "gray";
-}
-
-function suggestedMailAction(classification: EmailClassification) {
-  const suggestions: Record<EmailClassification, string> = {
-    confirmation: "Als beworben bestätigen",
-    rejection: "Als Absage markieren",
-    invitation: "Als Gespräch markieren",
-    question: "Antwort erforderlich",
-    follow_up: "Follow-up prüfen",
-    unknown: "Bitte manuell prüfen und bei Bedarf neu klassifizieren.",
-    requires_action: "Antwort erforderlich",
-  };
-  return suggestions[classification];
-}
-
-function suggestedApplicationStatus(
-  classification: EmailClassification,
-): ApplicationStatus | null {
-  const statuses: Partial<Record<EmailClassification, ApplicationStatus>> = {
-    confirmation: "applied",
-    rejection: "rejected",
-    invitation: "interview",
-    question: "response_received",
-    follow_up: "follow_up_due",
-    requires_action: "response_received",
-  };
-  return statuses[classification] ?? null;
-}
-
-function canCreateReplyDraft(classification: EmailClassification) {
-  return classification === "question" || classification === "invitation";
-}
-
-function latestMailForApplication(
-  applicationId: number,
-  mailMessages: EmailMessageDto[],
-) {
-  return (
-    mailMessages
-      .filter((message) => message.application === applicationId)
-      .sort(
-        (first, second) =>
-          new Date(second.received_at).getTime() -
-          new Date(first.received_at).getTime(),
-      )[0] ?? null
-  );
-}
-
-function isFollowUpRelevant(
-  application: ApplicationDto,
-  mailMessages: EmailMessageDto[],
-) {
-  if (application.status === "closed" || application.status === "rejected") return false;
-  return (
-    application.status === "applied" ||
-    application.status === "follow_up_due" ||
-    Boolean(application.follow_up_at) ||
-    isApplicationFollowUpDue(
-      application,
-      latestMailForApplication(application.id, mailMessages),
-    )
-  );
-}
-
-function matchesFollowUpFilter(
-  application: ApplicationDto,
-  filter: FollowUpFilterKey,
-  mailMessages: EmailMessageDto[],
-) {
-  const latestMail = latestMailForApplication(application.id, mailMessages);
-  if (filter === "all") return true;
-  if (filter === "due") return isApplicationFollowUpDue(application, latestMail);
-  if (filter === "planned") return isFollowUpPlanned(application);
-  if (filter === "without_date") {
-    return application.status === "applied" && !application.follow_up_at;
-  }
-  return (
-    application.status === "applied" &&
-    !isApplicationFollowUpDue(application, latestMail)
-  );
-}
-
-function isApplicationFollowUpDue(
-  application: ApplicationDto,
-  latestMail: EmailMessageDto | null,
-) {
-  if (application.status === "follow_up_due") return true;
-  if (isFollowUpDue(application.follow_up_at)) return true;
-  const hasResponse = latestMail
-    ? ["question", "invitation", "rejection", "follow_up", "requires_action"].includes(
-        latestMail.classification,
-      )
-    : false;
-  return (
-    application.status === "applied" &&
-    !application.follow_up_at &&
-    !hasResponse &&
-    daysSince(application.applied_at) >= followUpIntervalDays
-  );
-}
-
-function isFollowUpPlanned(application: ApplicationDto) {
-  if (!application.follow_up_at) return false;
-  const followUpDate = new Date(application.follow_up_at);
-  const today = new Date();
-  followUpDate.setHours(0, 0, 0, 0);
-  today.setHours(0, 0, 0, 0);
-  return followUpDate.getTime() > today.getTime();
-}
-
-function latestDocumentOfType(
-  application: ApplicationDto,
-  documentType: ApplicationDocumentDto["document_type"],
-) {
-  return (
-    application.documents
-      .filter((document) => document.document_type === documentType)
-      .sort((first, second) => second.version - first.version)[0] ?? null
-  );
-}
-
-function displaySender(sender: string) {
-  if (!sender.includes("@")) return sender;
-  return titleCase(sender.split("@")[0].replace(/[._-]/g, " "));
-}
-
 function statusLabel(status: SearchCampaignDto["status"]) {
   const labels: Record<SearchCampaignDto["status"], string> = {
     draft: "Entwurf",
@@ -3850,89 +3680,6 @@ function remoteTypeLabel(value: string) {
   return value || "Unbekannt";
 }
 
-function formatDate(value: string | null) {
-  if (!value) return "";
-  return new Intl.DateTimeFormat("de-DE").format(new Date(value));
-}
-
-function formatNullableDate(value: string | null) {
-  return value ? formatDate(value) : "Nicht gesetzt";
-}
-
-function dateInputValue(value: string | null) {
-  if (!value) return "";
-  return new Date(value).toISOString().slice(0, 10);
-}
-
-function dateInputToDateTime(value: string) {
-  if (!value) return null;
-  return new Date(`${value}T12:00:00`).toISOString();
-}
-
-function daysSince(value: string | null) {
-  if (!value) return 0;
-  return Math.max(
-    0,
-    Math.floor((Date.now() - new Date(value).getTime()) / 86_400_000),
-  );
-}
-
-function daysSinceDate(value: string | null) {
-  if (!value) return "Nicht gesetzt";
-  const days = daysSince(value);
-  if (days === 0) return "Heute";
-  if (days === 1) return "1 Tag";
-  return `${days} Tage`;
-}
-
-function isFollowUpDue(value: string | null) {
-  if (!value) return false;
-  const followUpDate = new Date(value);
-  const today = new Date();
-  followUpDate.setHours(0, 0, 0, 0);
-  today.setHours(0, 0, 0, 0);
-  return followUpDate.getTime() <= today.getTime();
-}
-
-function relativeDate(value: string) {
-  const date = new Date(value);
-  const now = new Date();
-  const diffDays = Math.floor((now.getTime() - date.getTime()) / 86_400_000);
-  if (diffDays <= 0) return "Heute";
-  if (diffDays === 1) return "Gestern";
-  return formatDate(value);
-}
-
-function logoForCompany(company: string) {
-  if (company.toLowerCase().includes("triology")) return "TRIOLOGY";
-  if (company.toLowerCase().includes("kosatec")) return "KOSATEC";
-  return company
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase())
-    .join("");
-}
-
-function initialsFrom(value: string) {
-  return (
-    value
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((part) => part[0]?.toUpperCase())
-      .join("") || "M"
-  );
-}
-
-function titleCase(value: string) {
-  return value
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
-    .join(" ");
-}
-
 function manualJobPayload(form: ManualJobFormState): ManualJobPostingPayload {
   return {
     company: form.company.trim(),
@@ -3947,13 +3694,6 @@ function manualJobPayload(form: ManualJobFormState): ManualJobPostingPayload {
     employment_type: form.employment_type.trim(),
     remote_type: form.remote_type.trim(),
   };
-}
-
-function splitCsv(value: string) {
-  return value
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
 }
 
 function readableError(error: unknown) {

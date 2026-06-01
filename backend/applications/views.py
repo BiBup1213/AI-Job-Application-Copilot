@@ -20,7 +20,9 @@ class ApplicationViewSet(viewsets.ModelViewSet):
     http_method_names = ["get", "patch", "post", "head", "options"]
 
     def perform_update(self, serializer):
-        old_status = self.get_object().status
+        previous_application = self.get_object()
+        old_status = previous_application.status
+        old_follow_up_at = previous_application.follow_up_at
         application = serializer.save()
         if old_status != application.status:
             StatusEvent.objects.create(
@@ -28,6 +30,13 @@ class ApplicationViewSet(viewsets.ModelViewSet):
                 old_status=old_status,
                 new_status=application.status,
                 note="Status manuell aktualisiert.",
+            )
+        if old_follow_up_at != application.follow_up_at:
+            StatusEvent.objects.create(
+                application=application,
+                old_status=application.status,
+                new_status=application.status,
+                note="Follow-up-Datum aktualisiert.",
             )
 
     @action(detail=True, methods=["post"], url_path="generate-documents")
@@ -79,16 +88,27 @@ class ApplicationViewSet(viewsets.ModelViewSet):
             )
         document.is_approved = True
         document.save(update_fields=["is_approved", "updated_at"])
-        if document.document_type in [
+        is_primary_application_document = document.document_type in [
             ApplicationDocument.DocumentType.COVER_LETTER,
             ApplicationDocument.DocumentType.EMAIL,
-        ] and application.documents.filter(
+        ]
+        has_approved_primary_document = application.documents.filter(
             document_type__in=[
                 ApplicationDocument.DocumentType.COVER_LETTER,
                 ApplicationDocument.DocumentType.EMAIL,
             ],
             is_approved=True,
-        ).exists():
+        ).exists()
+        can_move_to_draft_approved = application.status in [
+            Application.Status.NEW,
+            Application.Status.INTERESTING,
+            Application.Status.DRAFT_OPEN,
+        ]
+        if (
+            is_primary_application_document
+            and has_approved_primary_document
+            and can_move_to_draft_approved
+        ):
             old_status = application.status
             application.status = Application.Status.DRAFT_APPROVED
             application.save(update_fields=["status", "updated_at"])
@@ -179,15 +199,20 @@ class ApplicationViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         old_status = application.status
-        application.status = Application.Status.GMAIL_DRAFT_CREATED
-        application.save(update_fields=["status", "updated_at"])
-        if old_status != application.status:
-            StatusEvent.objects.create(
-                application=application,
-                old_status=old_status,
-                new_status=application.status,
-                note="Gmail-Entwurf simuliert erstellt. Es wurde nichts versendet.",
-            )
+        if application.status in [
+            Application.Status.NEW,
+            Application.Status.INTERESTING,
+            Application.Status.DRAFT_OPEN,
+            Application.Status.DRAFT_APPROVED,
+        ]:
+            application.status = Application.Status.GMAIL_DRAFT_CREATED
+            application.save(update_fields=["status", "updated_at"])
+        StatusEvent.objects.create(
+            application=application,
+            old_status=old_status,
+            new_status=application.status,
+            note="Gmail-Entwurf simuliert erstellt. Es wurde nichts versendet.",
+        )
         return Response(
             {
                 "message": "Gmail-Entwurf wurde simuliert. Kein Versand, keine Gmail API.",
@@ -199,13 +224,16 @@ class ApplicationViewSet(viewsets.ModelViewSet):
     def mark_applied(self, request, pk=None):
         application = self.get_object()
         old_status = application.status
-        application.status = Application.Status.APPLIED
-        application.applied_at = timezone.now()
-        application.save(update_fields=["status", "applied_at", "updated_at"])
-        StatusEvent.objects.create(
-            application=application,
-            old_status=old_status,
-            new_status=application.status,
-            note="Bewerbung als versendet markiert.",
-        )
+        missing_applied_at = application.applied_at is None
+        if application.status != Application.Status.APPLIED or missing_applied_at:
+            application.status = Application.Status.APPLIED
+            if missing_applied_at:
+                application.applied_at = timezone.now()
+            application.save(update_fields=["status", "applied_at", "updated_at"])
+            StatusEvent.objects.create(
+                application=application,
+                old_status=old_status,
+                new_status=application.status,
+                note="Bewerbung als versendet markiert.",
+            )
         return Response(ApplicationSerializer(application).data)

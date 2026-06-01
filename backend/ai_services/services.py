@@ -1,198 +1,106 @@
 from datetime import timedelta
+import logging
 
+from django.conf import settings
 from django.db.models import Count, Q
 from django.utils import timezone
 
-from applications.models import Application, ApplicationDocument, StatusEvent
+from applications.models import Application
+from ai_services.providers.mock import APPLICATION_ANGLE, MockAIProvider
+from ai_services.providers.openai_provider import OpenAIProvider
 from jobs.models import JobMatch, JobPosting
 from mailcenter.models import EmailMessage
 
 
-APPLICATION_ANGLE = (
-    "Nicht als reiner Junior verkaufen, sondern als praktisch geprägter Entwickler "
-    "mit Erfahrung in Webentwicklung, Automatisierung, E-Commerce-Prozessen und "
-    "schneller Einarbeitung."
-)
+logger = logging.getLogger(__name__)
+_provider = None
+_mock_provider = None
 
 
-def _category_for_score(score):
-    if score >= 85:
-        return JobMatch.Category.A
-    if score >= 75:
-        return JobMatch.Category.B
-    if score >= 60:
-        return JobMatch.Category.C
-    return JobMatch.Category.X
+def get_mock_provider():
+    global _mock_provider
+    if _mock_provider is None:
+        _mock_provider = MockAIProvider()
+    return _mock_provider
 
 
-def _score_for_job(job):
-    known_scores = {
-        "TRIOLOGY GmbH": 91,
-        "KOSATEC Computer GmbH": 88,
-        "Beispiel Commerce AG": 83,
-        "Stadt Wolfenbüttel": 76,
-    }
-    if job.company in known_scores:
-        return known_scores[job.company]
-    text = " ".join(
-        [
-            job.company,
-            job.title,
-            job.description,
-            " ".join(job.tags or []),
-            " ".join(job.requirements or []),
-        ]
-    ).lower()
-    score = 66
-    weights = {
-        "python": 11,
-        "django": 8,
-        "web": 7,
-        "automation": 8,
-        "automatisierung": 8,
-        "e-commerce": 7,
-        "ai": 6,
-        "ki": 6,
-        "support": -4,
-        "servicedesk": -5,
-    }
-    for keyword, weight in weights.items():
-        if keyword in text:
-            score += weight
-    if job.remote_type in ["remote", "hybrid"]:
-        score += 3
-    return max(0, min(100, score))
+def get_provider():
+    global _provider
+    if _provider is not None:
+        return _provider
+
+    provider_name = getattr(settings, "AI_PROVIDER", "mock").strip().lower()
+    if provider_name == "mock":
+        _provider = get_mock_provider()
+        return _provider
+
+    if provider_name == "openai":
+        api_key = getattr(settings, "OPENAI_API_KEY", "")
+        if not api_key:
+            logger.warning(
+                "AI_PROVIDER=openai configured but OPENAI_API_KEY is missing; "
+                "falling back to mock provider."
+            )
+            _provider = get_mock_provider()
+            return _provider
+        try:
+            _provider = OpenAIProvider(
+                api_key=api_key,
+                model=getattr(settings, "OPENAI_MODEL", ""),
+                fallback_provider=get_mock_provider(),
+            )
+            return _provider
+        except Exception:
+            logger.warning(
+                "OpenAI provider initialization failed; falling back to mock provider.",
+                exc_info=True,
+            )
+            _provider = get_mock_provider()
+            return _provider
+
+    logger.warning(
+        "Unsupported AI_PROVIDER '%s'; falling back to mock provider.",
+        provider_name,
+    )
+    _provider = get_mock_provider()
+    return _provider
+
+
+def _call_provider(method_name, *args):
+    provider = get_provider()
+    try:
+        return getattr(provider, method_name)(*args)
+    except Exception:
+        if provider is get_mock_provider():
+            raise
+        logger.warning(
+            "Configured AI provider failed during %s; falling back to mock provider.",
+            method_name,
+            exc_info=True,
+        )
+        return getattr(get_mock_provider(), method_name)(*args)
 
 
 def evaluate_job_match(job):
-    score = _score_for_job(job)
-    strengths = [
-        "Gute Überschneidung mit praktischer Webentwicklung.",
-        "Automatisierungs- und Prozessdenken lassen sich klar positionieren.",
-    ]
-    risks = []
-    if score < 80:
-        risks.append("Einige Anforderungen sollten vor einer Bewerbung manuell geprüft werden.")
-    if "servicedesk" in job.title.lower():
-        risks.append("Rolle kann stärker supportlastig sein als entwicklungsnah.")
-    recommendation = (
-        "Bewerben, wenn die Aufgaben genug Entwicklungsanteil enthalten."
-        if score >= 75
-        else "Nur bewerben, wenn die Stelle strategisch gut passt."
-    )
-    job_match, _ = JobMatch.objects.update_or_create(
-        job=job,
-        defaults={
-            "score": score,
-            "category": _category_for_score(score),
-            "strengths": strengths,
-            "risks": risks,
-            "recommendation": recommendation,
-            "application_angle": APPLICATION_ANGLE,
-        },
-    )
-    return job_match
+    return _call_provider("evaluate_job_match", job)
 
 
 def generate_application_documents(application):
-    job = application.job
-    match = getattr(job, "match", None) or evaluate_job_match(job)
-    next_cover_version = _next_document_version(
-        application, ApplicationDocument.DocumentType.COVER_LETTER
-    )
-    next_email_version = _next_document_version(
-        application, ApplicationDocument.DocumentType.EMAIL
-    )
-    cover_letter = ApplicationDocument.objects.create(
-        application=application,
-        document_type=ApplicationDocument.DocumentType.COVER_LETTER,
-        title=f"Anschreiben {job.company} - {job.title}",
-        version=next_cover_version,
-        content=(
-            f"Sehr geehrtes Recruiting-Team von {job.company},\n\n"
-            f"die Position als {job.title} spricht mich an, weil sie praktische "
-            "Softwareentwicklung mit klarer Problemlösung verbindet. Ich bringe "
-            "Erfahrung in Webentwicklung, Automatisierung und strukturiertem "
-            "Arbeiten an digitalen Prozessen mit.\n\n"
-            f"Mein Bewerbungswinkel: {match.application_angle}\n\n"
-            "Besonders relevant sind meine schnelle Einarbeitung, mein Blick für "
-            "verlässliche Abläufe und meine Bereitschaft, Verantwortung für konkrete "
-            "Umsetzungsschritte zu übernehmen.\n\n"
-            "Mit freundlichen Grüßen\n"
-            "Bob"
-        ),
-    )
-    email = ApplicationDocument.objects.create(
-        application=application,
-        document_type=ApplicationDocument.DocumentType.EMAIL,
-        title=f"Bewerbung als {job.title}",
-        version=next_email_version,
-        content=(
-            "Sehr geehrtes Recruiting-Team,\n\n"
-            f"anbei erhalten Sie meine Bewerbung für die Position {job.title}. "
-            "Ich freue mich besonders auf Aufgaben, bei denen ich Webentwicklung, "
-            "Automatisierung und pragmatische Prozessverbesserung verbinden kann.\n\n"
-            "Gerne erläutere ich meine Motivation und relevante Projekte in einem "
-            "persönlichen Gespräch.\n\n"
-            "Mit freundlichen Grüßen\n"
-            "Bob"
-        ),
-    )
-    return [cover_letter, email]
+    return _call_provider("generate_application_documents", application)
 
 
 def generate_follow_up_document(application):
-    job = application.job
-    next_version = _next_document_version(
-        application, ApplicationDocument.DocumentType.FOLLOW_UP
-    )
-    document = ApplicationDocument.objects.create(
-        application=application,
-        document_type=ApplicationDocument.DocumentType.FOLLOW_UP,
-        title=f"Follow-up zur Bewerbung als {job.title}",
-        version=next_version,
-        content=(
-            "Sehr geehrtes Recruiting-Team,\n\n"
-            f"ich wollte mich kurz nach dem aktuellen Stand meiner Bewerbung für die "
-            f"Position {job.title} erkundigen. Die Aufgabe bei {job.company} "
-            "interessiert mich weiterhin sehr.\n\n"
-            "Falls es bereits einen Zwischenstand gibt oder noch Unterlagen fehlen, "
-            "freue ich mich über eine kurze Rückmeldung.\n\n"
-            "Vielen Dank und freundliche Grüße\n"
-            "Bob"
-        ),
-    )
-    return document
+    return _call_provider("generate_follow_up_document", application)
 
 
 def classify_email_message(email):
-    subject = email.subject.lower()
-    body = email.body.lower()
-    text = f"{subject} {body}"
-    if any(word in text for word in ["einladung", "gespräch", "interview", "termin"]):
-        classification = EmailMessage.Classification.INVITATION
-    elif any(word in text for word in ["leider", "absage", "nicht berücksichtigen"]):
-        classification = EmailMessage.Classification.REJECTION
-    elif any(word in text for word in ["eingegangen", "bestätigung", "erhalten"]):
-        classification = EmailMessage.Classification.CONFIRMATION
-    elif any(word in text for word in ["frage", "rückfrage", "unterlagen"]):
-        classification = EmailMessage.Classification.QUESTION
-    elif any(word in text for word in ["bitte", "antwort", "rückmeldung"]):
-        classification = EmailMessage.Classification.REQUIRES_ACTION
-    else:
-        classification = EmailMessage.Classification.UNKNOWN
-    email.classification = classification
-    email.save(update_fields=["classification"])
-    return classification
+    return _call_provider("classify_email_message", email)
 
 
 def suggest_next_actions():
     actions = []
     draft_open = Application.objects.filter(status=Application.Status.DRAFT_OPEN).count()
-    follow_up_due = Application.objects.filter(
-        follow_up_at__lte=timezone.now(),
-        status__in=[Application.Status.APPLIED, Application.Status.FOLLOW_UP_DUE],
-    ).count()
+    follow_up_due = _followups_due_queryset().count()
     requires_action = EmailMessage.objects.filter(
         classification__in=[
             EmailMessage.Classification.INVITATION,
@@ -333,9 +241,7 @@ def dashboard_summary():
     responses_count = EmailMessage.objects.filter(application__isnull=False).exclude(
         classification=EmailMessage.Classification.UNKNOWN
     ).count()
-    followups_due = Application.objects.filter(
-        Q(status=Application.Status.FOLLOW_UP_DUE) | Q(follow_up_at__lte=now)
-    ).count()
+    followups_due = _followups_due_queryset(now).count()
 
     return {
         "kpis": {
@@ -371,10 +277,30 @@ def dashboard_summary():
     }
 
 
-def _next_document_version(application, document_type):
-    latest = (
-        application.documents.filter(document_type=document_type)
-        .order_by("-version")
-        .first()
+def _followups_due_queryset(now=None):
+    now = now or timezone.now()
+    response_classifications = [
+        EmailMessage.Classification.INVITATION,
+        EmailMessage.Classification.QUESTION,
+        EmailMessage.Classification.REJECTION,
+        EmailMessage.Classification.FOLLOW_UP,
+        EmailMessage.Classification.REQUIRES_ACTION,
+    ]
+    active_applications = Application.objects.exclude(
+        status__in=[Application.Status.CLOSED, Application.Status.REJECTED]
     )
-    return 1 if latest is None else latest.version + 1
+    scheduled_or_marked = active_applications.filter(
+        Q(status=Application.Status.FOLLOW_UP_DUE) | Q(follow_up_at__lte=now)
+    ).values("id")
+    stale_applied = (
+        active_applications.filter(
+            status=Application.Status.APPLIED,
+            follow_up_at__isnull=True,
+            applied_at__lte=now - timedelta(days=7),
+        )
+        .exclude(emails__classification__in=response_classifications)
+        .values("id")
+    )
+    return active_applications.filter(
+        Q(id__in=scheduled_or_marked) | Q(id__in=stale_applied)
+    ).distinct()
