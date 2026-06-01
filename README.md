@@ -48,9 +48,13 @@ VITE_API_BASE_URL=http://127.0.0.1:8000
 
 If the backend is unavailable, the dashboard shows a clean error state instead of crashing.
 
-The sidebar uses React Router routes for Übersicht, Suchkampagnen, Gefundene Jobs, Bewerbungen, Mail-Zentrale, Follow-ups, Profil, and Einstellungen. Non-dashboard pages are placeholders for now.
+The sidebar uses React Router routes for Übersicht, Suchkampagnen, Gefundene Jobs, Bewerbungen, Mail-Zentrale, Follow-ups, Profil, and Einstellungen. Some secondary routes are still placeholders while the jobs and applications pages already use backend data.
 
 Manual job import is available from the dashboard and `Gefundene Jobs` page. Imported jobs are stored through the backend and immediately evaluated with the deterministic mock matching service.
+
+The `Bewerbungen` page lists backend applications with status filters, quick actions, follow-up dates, notes, and links into the document review/detail view.
+
+The `Mail-Zentrale` page lists simulated mail messages, supports mock sync and reclassification, lets messages be linked to applications, and offers explicit status-update suggestions for linked applications.
 
 Creating a simulated Gmail draft remains human-in-the-loop: the frontend opens a document review workflow where generated documents can be edited and explicitly approved before calling the mock Gmail draft endpoint.
 
@@ -88,15 +92,20 @@ The frontend uses these API calls:
 - `POST /api/jobs/manual-import/`
 - `GET /api/campaigns/`
 - `GET /api/applications/`
+- `GET /api/applications/{id}/`
+- `PATCH /api/applications/{id}/`
 - `GET /api/mail/messages/`
 - `POST /api/jobs/{id}/create-application/`
 - `POST /api/applications/{id}/generate-documents/`
 - `POST /api/applications/{id}/approve-document/`
 - `PATCH /api/applications/{id}/documents/{document_id}/`
 - `POST /api/applications/{id}/create-gmail-draft/`
+- `POST /api/applications/{id}/mark-applied/`
 - `POST /api/campaigns/`
 - `POST /api/campaigns/{id}/run/`
 - `POST /api/mail/sync/`
+- `PATCH /api/mail/messages/{id}/`
+- `POST /api/mail/messages/{id}/classify/`
 
 ## Main API Endpoints
 
@@ -125,6 +134,7 @@ POST /api/applications/{id}/create-gmail-draft/
 POST /api/applications/{id}/mark-applied/
 
 GET  /api/mail/messages/
+PATCH /api/mail/messages/{id}/
 POST /api/mail/sync/
 POST /api/mail/messages/{id}/classify/
 ```

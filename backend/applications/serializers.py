@@ -37,6 +37,7 @@ class StatusEventSerializer(serializers.ModelSerializer):
 
 class ApplicationSerializer(serializers.ModelSerializer):
     job_detail = ApplicationJobSerializer(source="job", read_only=True)
+    match_score = serializers.SerializerMethodField()
     documents = ApplicationDocumentSerializer(many=True, read_only=True)
     status_events = StatusEventSerializer(many=True, read_only=True)
 
@@ -46,6 +47,7 @@ class ApplicationSerializer(serializers.ModelSerializer):
             "id",
             "job",
             "job_detail",
+            "match_score",
             "status",
             "notes",
             "applied_at",
@@ -55,4 +57,15 @@ class ApplicationSerializer(serializers.ModelSerializer):
             "documents",
             "status_events",
         ]
-        read_only_fields = ["id", "created_at", "updated_at", "documents", "status_events"]
+        read_only_fields = [
+            "id",
+            "match_score",
+            "created_at",
+            "updated_at",
+            "documents",
+            "status_events",
+        ]
+
+    def get_match_score(self, obj):
+        match = getattr(obj.job, "match", None)
+        return match.score if match else None

@@ -35,6 +35,7 @@ export type ApplicationDto = {
     location: string;
     remote_type: string;
   };
+  match_score: number | null;
   status: ApplicationStatus;
   notes: string;
   applied_at: string | null;
@@ -52,12 +53,32 @@ export type ApplicationDto = {
   }>;
 };
 
+export type UpdateApplicationPayload = Partial<
+  Pick<ApplicationDto, "status" | "notes" | "follow_up_at">
+>;
+
 export function getApplications() {
   return apiRequest<ApplicationDto[]>("/api/applications/");
 }
 
 export function getApplication(applicationId: number) {
   return apiRequest<ApplicationDto>(`/api/applications/${applicationId}/`);
+}
+
+export function updateApplication(
+  applicationId: number,
+  payload: UpdateApplicationPayload,
+) {
+  return apiRequest<ApplicationDto>(`/api/applications/${applicationId}/`, {
+    method: "PATCH",
+    body: payload,
+  });
+}
+
+export function markApplicationApplied(applicationId: number) {
+  return apiRequest<ApplicationDto>(`/api/applications/${applicationId}/mark-applied/`, {
+    method: "POST",
+  });
 }
 
 export function generateApplicationDocuments(applicationId: number) {

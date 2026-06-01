@@ -18,11 +18,14 @@ export type EmailMessageDto = {
     title: string;
     status: string;
   } | null;
+  application_company: string;
+  application_job_title: string;
   sender: string;
   subject: string;
   body: string;
   received_at: string;
   classification: EmailClassification;
+  requires_action: boolean;
   created_at: string;
 };
 
@@ -40,5 +43,15 @@ export function syncMail() {
 export function classifyMailMessage(messageId: number) {
   return apiRequest<EmailMessageDto>(`/api/mail/messages/${messageId}/classify/`, {
     method: "POST",
+  });
+}
+
+export function updateMailMessage(
+  messageId: number,
+  payload: { application: number | null },
+) {
+  return apiRequest<EmailMessageDto>(`/api/mail/messages/${messageId}/`, {
+    method: "PATCH",
+    body: payload,
   });
 }

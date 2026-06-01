@@ -12,6 +12,7 @@ from .serializers import ApplicationDocumentSerializer, ApplicationSerializer
 class ApplicationViewSet(viewsets.ModelViewSet):
     queryset = (
         Application.objects.select_related("job")
+        .select_related("job__match")
         .prefetch_related("documents", "status_events")
         .all()
     )

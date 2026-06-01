@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { FormEvent, ReactNode } from "react";
-import { Navigate, NavLink, Route, Routes, useParams } from "react-router-dom";
+import type { FormEvent, MouseEvent, ReactNode } from "react";
+import { Navigate, NavLink, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowRight,
   Bell,
@@ -30,10 +30,13 @@ import {
   generateApplicationDocuments,
   getApplication,
   getApplications,
+  markApplicationApplied,
+  updateApplication,
   updateApplicationDocument,
   type ApplicationDto,
   type ApplicationDocumentDto,
   type ApplicationStatus,
+  type UpdateApplicationPayload,
 } from "./api/applications";
 import {
   createCampaign,
@@ -50,7 +53,14 @@ import {
   type ManualJobPostingPayload,
   type JobPostingDto,
 } from "./api/jobs";
-import { getMailMessages, syncMail, type EmailMessageDto } from "./api/mail";
+import {
+  classifyMailMessage,
+  getMailMessages,
+  syncMail,
+  updateMailMessage,
+  type EmailClassification,
+  type EmailMessageDto,
+} from "./api/mail";
 import {
   navigationItems,
   type Job,
@@ -118,7 +128,7 @@ type PipelineColumn = {
   title: string;
   count: number;
   tone: "blue" | "orange" | "green" | "purple";
-  cards: Array<{ title: string; subtitle: string; date: string }>;
+  cards: Array<{ id: number; title: string; subtitle: string; date: string }>;
 };
 
 type TodayItem = {
@@ -129,6 +139,25 @@ type TodayItem = {
 };
 
 type ReviewDocumentType = "cover_letter" | "email";
+type ApplicationFilterKey =
+  | "all"
+  | "draft"
+  | "approved"
+  | "gmail"
+  | "applied"
+  | "response"
+  | "interview"
+  | "rejected"
+  | "follow_up"
+  | "closed";
+type MailFilterKey =
+  | "all"
+  | "requires_action"
+  | "confirmation"
+  | "question"
+  | "invitation"
+  | "rejection"
+  | "unknown";
 
 function cn(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
@@ -186,6 +215,62 @@ const defaultManualJobForm: ManualJobFormState = {
   tags: "",
 };
 
+const applicationFilters: Array<{
+  key: ApplicationFilterKey;
+  label: string;
+  statuses: ApplicationStatus[];
+}> = [
+  { key: "all", label: "Alle", statuses: [] },
+  { key: "draft", label: "Entwurf", statuses: ["draft_open"] },
+  { key: "approved", label: "Freigegeben", statuses: ["draft_approved"] },
+  { key: "gmail", label: "Gmail-Entwurf", statuses: ["gmail_draft_created"] },
+  { key: "applied", label: "Beworben", statuses: ["applied"] },
+  { key: "response", label: "Antwort", statuses: ["response_received"] },
+  { key: "interview", label: "Gespräch", statuses: ["interview"] },
+  { key: "rejected", label: "Absage", statuses: ["rejected"] },
+  { key: "follow_up", label: "Follow-up", statuses: ["follow_up_due"] },
+  { key: "closed", label: "Abgeschlossen", statuses: ["closed"] },
+];
+
+const mailFilters: Array<{
+  key: MailFilterKey;
+  label: string;
+  predicate: (message: EmailMessageDto) => boolean;
+}> = [
+  { key: "all", label: "Alle", predicate: () => true },
+  {
+    key: "requires_action",
+    label: "Aktion erforderlich",
+    predicate: (message) => message.requires_action,
+  },
+  {
+    key: "confirmation",
+    label: "Eingangsbestätigung",
+    predicate: (message) => message.classification === "confirmation",
+  },
+  {
+    key: "question",
+    label: "Rückfrage",
+    predicate: (message) =>
+      message.classification === "question" || message.classification === "requires_action",
+  },
+  {
+    key: "invitation",
+    label: "Einladung",
+    predicate: (message) => message.classification === "invitation",
+  },
+  {
+    key: "rejection",
+    label: "Absage",
+    predicate: (message) => message.classification === "rejection",
+  },
+  {
+    key: "unknown",
+    label: "Unbekannt",
+    predicate: (message) => message.classification === "unknown",
+  },
+];
+
 export function App() {
   return (
     <div className="min-h-screen bg-[#f7f9fd] text-slate-950">
@@ -196,8 +281,8 @@ export function App() {
           <Route path="/suchkampagnen" element={<PlaceholderPage title="Suchkampagnen" />} />
           <Route path="/jobs" element={<JobsPage />} />
           <Route path="/bewerbungen/:id" element={<ApplicationReviewPage />} />
-          <Route path="/bewerbungen" element={<PlaceholderPage title="Bewerbungen" />} />
-          <Route path="/mail" element={<PlaceholderPage title="Mail-Zentrale" />} />
+          <Route path="/bewerbungen" element={<ApplicationsPage />} />
+          <Route path="/mail" element={<MailPage />} />
           <Route path="/follow-ups" element={<PlaceholderPage title="Follow-ups" />} />
           <Route path="/profil" element={<PlaceholderPage title="Profil" />} />
           <Route path="/einstellungen" element={<PlaceholderPage title="Einstellungen" />} />
@@ -758,6 +843,728 @@ function JobsPage() {
   );
 }
 
+function ApplicationsPage() {
+  const navigate = useNavigate();
+  const [applications, setApplications] = useState<ApplicationDto[]>([]);
+  const [activeFilter, setActiveFilter] = useState<ApplicationFilterKey>("all");
+  const [loading, setLoading] = useState(true);
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [busyApplicationId, setBusyApplicationId] = useState<number | null>(null);
+
+  const loadApplicationsPageData = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      setApplications(await getApplications());
+    } catch (error) {
+      setLoadError(readableError(error));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadApplicationsPageData();
+  }, [loadApplicationsPageData]);
+
+  const filteredApplications = useMemo(() => {
+    const filter = applicationFilters.find((item) => item.key === activeFilter);
+    if (!filter || filter.key === "all") return applications;
+    return applications.filter((application) => filter.statuses.includes(application.status));
+  }, [activeFilter, applications]);
+
+  async function handlePatchApplication(
+    applicationId: number,
+    payload: UpdateApplicationPayload,
+    successText: string,
+  ) {
+    setNotice(null);
+    setBusyApplicationId(applicationId);
+    try {
+      await updateApplication(applicationId, payload);
+      await loadApplicationsPageData();
+      setNotice({ type: "success", text: successText });
+    } catch (error) {
+      setNotice({ type: "error", text: readableError(error) });
+    } finally {
+      setBusyApplicationId(null);
+    }
+  }
+
+  async function handleMarkApplied(applicationId: number) {
+    setNotice(null);
+    setBusyApplicationId(applicationId);
+    try {
+      await markApplicationApplied(applicationId);
+      await loadApplicationsPageData();
+      setNotice({ type: "success", text: "Bewerbung wurde als beworben markiert." });
+    } catch (error) {
+      setNotice({ type: "error", text: readableError(error) });
+    } finally {
+      setBusyApplicationId(null);
+    }
+  }
+
+  async function handleCreateDraft(application: ApplicationDto) {
+    setNotice(null);
+    setBusyApplicationId(application.id);
+    try {
+      await createGmailDraft(application.id);
+      await loadApplicationsPageData();
+      setNotice({ type: "success", text: "Gmail-Entwurf wurde simuliert erstellt." });
+    } catch (error) {
+      setNotice({ type: "error", text: readableError(error) });
+    } finally {
+      setBusyApplicationId(null);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-[1504px] px-8 py-7">
+      <header className="flex items-center justify-between">
+        <div>
+          <h1 className="text-[28px] font-bold tracking-[-0.03em]">Bewerbungen</h1>
+          <p className="mt-1 text-sm font-medium text-slate-500">
+            Bewerbungen prüfen, Status pflegen und Follow-ups planen.
+          </p>
+        </div>
+        <NavLink
+          className="inline-flex h-11 items-center gap-2 rounded-lg border border-slate-200 bg-white px-5 text-sm font-semibold text-slate-800 shadow-sm transition hover:bg-slate-50"
+          to="/"
+        >
+          Zur Übersicht
+        </NavLink>
+      </header>
+      {notice ? <NoticeBanner notice={notice} onDismiss={() => setNotice(null)} /> : null}
+      {loadError ? (
+        <ErrorState message={loadError} onRetry={loadApplicationsPageData} />
+      ) : (
+        <>
+          <section className="card mt-6 p-4">
+            <div className="flex flex-wrap gap-2">
+              {applicationFilters.map((filter) => (
+                <button
+                  key={filter.key}
+                  className={cn(
+                    "rounded-lg border px-3 py-2 text-sm font-bold transition",
+                    activeFilter === filter.key
+                      ? "border-blue-200 bg-blue-50 text-blue-700"
+                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+                  )}
+                  onClick={() => setActiveFilter(filter.key)}
+                >
+                  {filter.label}
+                </button>
+              ))}
+            </div>
+          </section>
+          <section className="mt-4 space-y-3">
+            {loading ? (
+              <section className="card p-4">
+                <SkeletonRows count={5} />
+              </section>
+            ) : filteredApplications.length ? (
+              filteredApplications.map((application) => (
+                <ApplicationListCard
+                  key={application.id}
+                  application={application}
+                  busy={busyApplicationId === application.id}
+                  onOpen={() => navigate(`/bewerbungen/${application.id}`)}
+                  onCreateDraft={() => handleCreateDraft(application)}
+                  onMarkApplied={() => handleMarkApplied(application.id)}
+                  onSetFollowUp={(value) =>
+                    handlePatchApplication(
+                      application.id,
+                      { follow_up_at: dateInputToDateTime(value) },
+                      "Follow-up-Datum wurde gespeichert.",
+                    )
+                  }
+                  onClose={() =>
+                    handlePatchApplication(
+                      application.id,
+                      { status: "closed" },
+                      "Bewerbung wurde abgeschlossen.",
+                    )
+                  }
+                />
+              ))
+            ) : (
+              <section className="card p-8">
+                <EmptyState text="Keine Bewerbungen für diesen Filter gefunden." />
+              </section>
+            )}
+          </section>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ApplicationListCard({
+  application,
+  busy,
+  onOpen,
+  onCreateDraft,
+  onMarkApplied,
+  onSetFollowUp,
+  onClose,
+}: {
+  application: ApplicationDto;
+  busy: boolean;
+  onOpen: () => void;
+  onCreateDraft: () => void;
+  onMarkApplied: () => void;
+  onSetFollowUp: (value: string) => void;
+  onClose: () => void;
+}) {
+  const [followUpDate, setFollowUpDate] = useState(dateInputValue(application.follow_up_at));
+  const due = isFollowUpDue(application.follow_up_at);
+
+  useEffect(() => {
+    setFollowUpDate(dateInputValue(application.follow_up_at));
+  }, [application.follow_up_at]);
+
+  function stopAndRun(event: MouseEvent, action: () => void) {
+    event.stopPropagation();
+    action();
+  }
+
+  return (
+    <article
+      className="card cursor-pointer p-5 transition hover:border-blue-200 hover:shadow-md"
+      onClick={onOpen}
+    >
+      <div className="grid grid-cols-[1fr_88px_168px] items-start gap-5">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-slate-500">
+            {application.job_detail.company}
+          </div>
+          <h2 className="mt-1 truncate text-lg font-bold tracking-[-0.02em]">
+            {application.job_detail.title}
+          </h2>
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-slate-500">
+            <span>{application.job_detail.location || "Standort offen"}</span>
+            <span>·</span>
+            <span>{remoteTypeLabel(application.job_detail.remote_type)}</span>
+            <span>·</span>
+            <span>Aktualisiert {relativeDate(application.updated_at)}</span>
+          </div>
+        </div>
+        <ScoreBadge score={application.match_score ?? 0} compact />
+        <StatusBadge
+          label={applicationStatusLabel(application.status)}
+          tone={applicationStatusTone(application.status)}
+        />
+      </div>
+      <div className="mt-4 grid grid-cols-4 gap-3">
+        <ApplicationMeta label="Beworben am" value={formatNullableDate(application.applied_at)} />
+        <ApplicationMeta
+          label="Follow-up"
+          value={formatNullableDate(application.follow_up_at)}
+          due={due}
+        />
+        <ApplicationMeta label="Erstellt" value={formatNullableDate(application.created_at)} />
+        <ApplicationMeta label="Dokumente" value={`${application.documents.length}`} />
+      </div>
+      <div className="mt-4 flex flex-wrap items-end gap-2 border-t border-slate-100 pt-4">
+        <NavLink
+          className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-blue-700 hover:bg-blue-50"
+          to={`/bewerbungen/${application.id}`}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <FileText size={15} />
+          Dokumente prüfen
+        </NavLink>
+        <button
+          className="inline-flex h-9 items-center gap-2 rounded-lg bg-blue-600 px-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
+          disabled={busy}
+          onClick={(event) => stopAndRun(event, onCreateDraft)}
+        >
+          {busy ? <Loader2 size={15} className="animate-spin" /> : <MailIcon size={15} />}
+          Gmail-Entwurf erstellen
+        </button>
+        <button
+          className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60"
+          disabled={busy || application.status === "applied"}
+          onClick={(event) => stopAndRun(event, onMarkApplied)}
+        >
+          <Send size={15} />
+          Als beworben markieren
+        </button>
+        <label
+          className={cn(
+            "flex h-9 items-center gap-2 rounded-lg border px-3 text-sm font-semibold",
+            due
+              ? "border-orange-200 bg-orange-50 text-orange-800"
+              : "border-slate-200 bg-white text-slate-700",
+          )}
+          onClick={(event) => event.stopPropagation()}
+        >
+          Follow-up-Datum setzen
+          <input
+            className="h-7 rounded-md border border-slate-200 px-2 text-sm outline-none"
+            type="date"
+            value={followUpDate}
+            onChange={(event) => setFollowUpDate(event.target.value)}
+          />
+        </label>
+        <button
+          className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60"
+          disabled={busy || followUpDate === dateInputValue(application.follow_up_at)}
+          onClick={(event) => stopAndRun(event, () => onSetFollowUp(followUpDate))}
+        >
+          Speichern
+        </button>
+        <button
+          className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60"
+          disabled={busy || application.status === "closed"}
+          onClick={(event) => stopAndRun(event, onClose)}
+        >
+          Als abgeschlossen markieren
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function ApplicationMeta({
+  label,
+  value,
+  due = false,
+}: {
+  label: string;
+  value: string;
+  due?: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded-lg border px-3 py-2",
+        due ? "border-orange-200 bg-orange-50" : "border-slate-100 bg-slate-50",
+      )}
+    >
+      <div className="text-[11px] font-bold uppercase text-slate-500">{label}</div>
+      <div className={cn("mt-1 text-sm font-bold", due ? "text-orange-800" : "text-slate-800")}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function MailPage() {
+  const [messages, setMessages] = useState<EmailMessageDto[]>([]);
+  const [applications, setApplications] = useState<ApplicationDto[]>([]);
+  const [activeFilter, setActiveFilter] = useState<MailFilterKey>("all");
+  const [selectedMessageId, setSelectedMessageId] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [busyMessageId, setBusyMessageId] = useState<number | null>(null);
+  const [syncing, setSyncing] = useState(false);
+
+  const loadMailPageData = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const [mailData, applicationData] = await Promise.all([
+        getMailMessages(),
+        getApplications(),
+      ]);
+      setMessages(mailData);
+      setApplications(applicationData);
+    } catch (error) {
+      setLoadError(readableError(error));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadMailPageData();
+  }, [loadMailPageData]);
+
+  const filteredMessages = useMemo(() => {
+    const filter = mailFilters.find((item) => item.key === activeFilter) ?? mailFilters[0];
+    return messages.filter(filter.predicate);
+  }, [activeFilter, messages]);
+  const selectedMessage =
+    messages.find((message) => message.id === selectedMessageId) ?? null;
+
+  async function handleSync() {
+    setNotice(null);
+    setSyncing(true);
+    try {
+      await syncMail();
+      await loadMailPageData();
+      setNotice({ type: "success", text: "Mail-Synchronisierung wurde simuliert." });
+    } catch (error) {
+      setNotice({ type: "error", text: readableError(error) });
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  async function handleClassify(messageId: number) {
+    setNotice(null);
+    setBusyMessageId(messageId);
+    try {
+      await classifyMailMessage(messageId);
+      await loadMailPageData();
+      setNotice({ type: "success", text: "E-Mail wurde neu klassifiziert." });
+    } catch (error) {
+      setNotice({ type: "error", text: readableError(error) });
+    } finally {
+      setBusyMessageId(null);
+    }
+  }
+
+  async function handleLinkMessage(messageId: number, applicationId: number | null) {
+    setNotice(null);
+    setBusyMessageId(messageId);
+    try {
+      await updateMailMessage(messageId, { application: applicationId });
+      await loadMailPageData();
+      setNotice({ type: "success", text: "E-Mail wurde der Bewerbung zugeordnet." });
+    } catch (error) {
+      setNotice({ type: "error", text: readableError(error) });
+    } finally {
+      setBusyMessageId(null);
+    }
+  }
+
+  async function handleUpdateLinkedApplicationStatus(message: EmailMessageDto) {
+    if (!message.application) return;
+    const status = suggestedApplicationStatus(message.classification);
+    if (!status) return;
+    setNotice(null);
+    setBusyMessageId(message.id);
+    try {
+      await updateApplication(message.application, { status });
+      await loadMailPageData();
+      setNotice({ type: "success", text: "Bewerbungsstatus wurde aktualisiert." });
+    } catch (error) {
+      setNotice({ type: "error", text: readableError(error) });
+    } finally {
+      setBusyMessageId(null);
+    }
+  }
+
+  function handleReplyDraftPlaceholder() {
+    setNotice({
+      type: "success",
+      text: "Antwortentwürfe werden in einem späteren Schritt umgesetzt.",
+    });
+  }
+
+  return (
+    <div className="mx-auto max-w-[1504px] px-8 py-7">
+      <header className="flex items-center justify-between">
+        <div>
+          <h1 className="text-[28px] font-bold tracking-[-0.03em]">Mail-Zentrale</h1>
+          <p className="mt-1 text-sm font-medium text-slate-500">
+            Simulierte Antworten prüfen, klassifizieren und Bewerbungen zuordnen.
+          </p>
+        </div>
+        <button
+          className="inline-flex h-11 items-center gap-2 rounded-lg bg-blue-600 px-5 text-sm font-semibold text-white shadow-sm shadow-blue-200 transition hover:bg-blue-700 disabled:opacity-70"
+          disabled={syncing}
+          onClick={handleSync}
+        >
+          <RefreshCw size={18} className={syncing ? "animate-spin" : ""} />
+          Synchronisieren
+        </button>
+      </header>
+      {notice ? <NoticeBanner notice={notice} onDismiss={() => setNotice(null)} /> : null}
+      {loadError ? (
+        <ErrorState message={loadError} onRetry={loadMailPageData} />
+      ) : (
+        <>
+          <section className="card mt-6 p-4">
+            <div className="flex flex-wrap gap-2">
+              {mailFilters.map((filter) => (
+                <button
+                  key={filter.key}
+                  className={cn(
+                    "rounded-lg border px-3 py-2 text-sm font-bold transition",
+                    activeFilter === filter.key
+                      ? "border-blue-200 bg-blue-50 text-blue-700"
+                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+                  )}
+                  onClick={() => setActiveFilter(filter.key)}
+                >
+                  {filter.label}
+                </button>
+              ))}
+            </div>
+          </section>
+          <section className="mt-4 space-y-3">
+            {loading ? (
+              <section className="card p-4">
+                <SkeletonRows count={5} />
+              </section>
+            ) : filteredMessages.length ? (
+              filteredMessages.map((message) => (
+                <MailListCard
+                  key={message.id}
+                  message={message}
+                  busy={busyMessageId === message.id}
+                  onOpen={() => setSelectedMessageId(message.id)}
+                  onClassify={() => handleClassify(message.id)}
+                  onReplyDraft={handleReplyDraftPlaceholder}
+                />
+              ))
+            ) : (
+              <section className="card p-8">
+                <EmptyState text="Keine E-Mails für diesen Filter gefunden." />
+              </section>
+            )}
+          </section>
+        </>
+      )}
+      {selectedMessage ? (
+        <MailDetailModal
+          message={selectedMessage}
+          applications={applications}
+          busy={busyMessageId === selectedMessage.id}
+          onClose={() => setSelectedMessageId(null)}
+          onClassify={() => handleClassify(selectedMessage.id)}
+          onLink={(applicationId) => handleLinkMessage(selectedMessage.id, applicationId)}
+          onUpdateApplicationStatus={() =>
+            handleUpdateLinkedApplicationStatus(selectedMessage)
+          }
+          onReplyDraft={handleReplyDraftPlaceholder}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function MailListCard({
+  message,
+  busy,
+  onOpen,
+  onClassify,
+  onReplyDraft,
+}: {
+  message: EmailMessageDto;
+  busy: boolean;
+  onOpen: () => void;
+  onClassify: () => void;
+  onReplyDraft: () => void;
+}) {
+  function stopAndRun(event: MouseEvent, action: () => void) {
+    event.stopPropagation();
+    action();
+  }
+
+  return (
+    <article
+      className="card cursor-pointer p-5 transition hover:border-blue-200 hover:shadow-md"
+      onClick={onOpen}
+    >
+      <div className="grid grid-cols-[1fr_auto] gap-4">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="truncate text-base font-bold tracking-[-0.02em]">
+              {message.subject}
+            </h2>
+            <StatusBadge
+              label={classificationLabel(message.classification)}
+              tone={classificationTone(message.classification)}
+            />
+            {message.requires_action ? (
+              <span className="rounded-md border border-orange-200 bg-orange-50 px-2 py-0.5 text-xs font-bold text-orange-800">
+                Aktion erforderlich
+              </span>
+            ) : null}
+          </div>
+          <div className="mt-2 text-sm font-semibold text-slate-600">
+            {displaySender(message.sender)}
+          </div>
+          <p className="mt-2 line-clamp-2 text-sm leading-6 text-slate-500">
+            {message.body}
+          </p>
+        </div>
+        <div className="text-right text-sm font-semibold text-slate-500">
+          {formatNullableDate(message.received_at)}
+        </div>
+      </div>
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4">
+        <div className="min-w-0 text-sm text-slate-500">
+          {message.application_summary ? (
+            <span>
+              Zugeordnet:{" "}
+              <strong className="text-slate-800">
+                {message.application_summary.company} – {message.application_summary.title}
+              </strong>
+            </span>
+          ) : (
+            <span>Nicht zugeordnet</span>
+          )}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60"
+            disabled={busy}
+            onClick={(event) => stopAndRun(event, onClassify)}
+          >
+            {busy ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
+            Neu klassifizieren
+          </button>
+          {canCreateReplyDraft(message.classification) ? (
+            <button
+              className="inline-flex h-9 items-center gap-2 rounded-lg bg-blue-600 px-3 text-sm font-semibold text-white hover:bg-blue-700"
+              onClick={(event) => stopAndRun(event, onReplyDraft)}
+            >
+              <PenLine size={15} />
+              Antwortentwurf erstellen
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function MailDetailModal({
+  message,
+  applications,
+  busy,
+  onClose,
+  onClassify,
+  onLink,
+  onUpdateApplicationStatus,
+  onReplyDraft,
+}: {
+  message: EmailMessageDto;
+  applications: ApplicationDto[];
+  busy: boolean;
+  onClose: () => void;
+  onClassify: () => void;
+  onLink: (applicationId: number | null) => void;
+  onUpdateApplicationStatus: () => void;
+  onReplyDraft: () => void;
+}) {
+  const suggestedStatus = suggestedApplicationStatus(message.classification);
+
+  return (
+    <div className="fixed inset-0 z-20 flex items-center justify-center bg-slate-950/35 px-4 py-8">
+      <div className="max-h-[92vh] w-full max-w-4xl overflow-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-slate-500">
+              {displaySender(message.sender)}
+            </div>
+            <h2 className="mt-1 text-xl font-bold tracking-[-0.02em]">
+              {message.subject}
+            </h2>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <StatusBadge
+                label={classificationLabel(message.classification)}
+                tone={classificationTone(message.classification)}
+              />
+              {message.requires_action ? (
+                <span className="rounded-md border border-orange-200 bg-orange-50 px-2 py-0.5 text-xs font-bold text-orange-800">
+                  Aktion erforderlich
+                </span>
+              ) : null}
+              <span className="text-sm font-semibold text-slate-500">
+                Eingang: {formatNullableDate(message.received_at)}
+              </span>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"
+            onClick={onClose}
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="mt-6 grid grid-cols-[1fr_320px] gap-4">
+          <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
+            <h3 className="text-sm font-bold">Nachricht</h3>
+            <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-slate-700">
+              {message.body}
+            </p>
+          </div>
+          <div className="space-y-4">
+            <div className="rounded-xl border border-slate-100 bg-white p-4">
+              <h3 className="text-sm font-bold">Bewerbung zuordnen</h3>
+              <select
+                className="mt-3 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                value={message.application ?? ""}
+                onChange={(event) =>
+                  onLink(event.target.value ? Number(event.target.value) : null)
+                }
+              >
+                <option value="">Keine Zuordnung</option>
+                {applications.map((application) => (
+                  <option key={application.id} value={application.id}>
+                    {application.job_detail.company} – {application.job_detail.title}
+                  </option>
+                ))}
+              </select>
+              {message.application_summary ? (
+                <div className="mt-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800">
+                  {message.application_summary.company} –{" "}
+                  {message.application_summary.title}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="rounded-xl border border-slate-100 bg-white p-4">
+              <h3 className="text-sm font-bold">Vorschlag</h3>
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                {suggestedMailAction(message.classification)}
+              </p>
+              {message.application && suggestedStatus ? (
+                <button
+                  className="mt-3 inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
+                  disabled={busy}
+                  onClick={onUpdateApplicationStatus}
+                >
+                  {busy ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />}
+                  Status aktualisieren
+                </button>
+              ) : (
+                <p className="mt-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-500">
+                  Für Statusaktionen zuerst eine Bewerbung zuordnen.
+                </p>
+              )}
+            </div>
+
+            <div className="rounded-xl border border-slate-100 bg-white p-4">
+              <h3 className="text-sm font-bold">Aktionen</h3>
+              <div className="mt-3 space-y-2">
+                <button
+                  className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60"
+                  disabled={busy}
+                  onClick={onClassify}
+                >
+                  {busy ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
+                  Neu klassifizieren
+                </button>
+                {canCreateReplyDraft(message.classification) ? (
+                  <button
+                    className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-3 text-sm font-semibold text-white hover:bg-blue-700"
+                    onClick={onReplyDraft}
+                  >
+                    <PenLine size={15} />
+                    Antwortentwurf erstellen
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function KpiCard({ kpi, loading }: { kpi: Kpi; loading: boolean }) {
   const Icon = kpi.icon;
   return (
@@ -1110,9 +1917,10 @@ function MailCenterPanel({
           <SkeletonRows count={3} />
         ) : mails.length ? (
           mails.map((mail) => (
-            <div
+            <NavLink
               key={mail.id}
               className="grid grid-cols-[38px_1fr_auto_12px] items-center gap-3 px-4 py-3"
+              to="/mail"
             >
               <div
                 className={cn(
@@ -1131,7 +1939,7 @@ function MailCenterPanel({
               </div>
               <StatusBadge label={mail.badge} tone={mail.tone} />
               <span className="h-1.5 w-1.5 rounded-full bg-blue-600" />
-            </div>
+            </NavLink>
           ))
         ) : (
           <EmptyState text="Noch keine E-Mails synchronisiert." />
@@ -1175,7 +1983,11 @@ function PipelineBoard({
                 <div className="divide-y divide-slate-100">
                   {column.cards.length ? (
                     column.cards.map((card) => (
-                      <div key={`${card.title}-${card.date}`} className="grid grid-cols-[1fr_auto] gap-2 px-3 py-3">
+                      <NavLink
+                        key={card.id}
+                        className="grid grid-cols-[1fr_auto] gap-2 px-3 py-3 transition hover:bg-blue-50"
+                        to={`/bewerbungen/${card.id}`}
+                      >
                         <div className="min-w-0">
                           <div className="truncate text-xs font-bold">{card.title}</div>
                           <div className="mt-1 truncate text-[11px] text-slate-500">
@@ -1183,7 +1995,7 @@ function PipelineBoard({
                           </div>
                         </div>
                         <div className="pt-4 text-[11px] text-slate-500">{card.date}</div>
-                      </div>
+                      </NavLink>
                     ))
                   ) : (
                     <div className="px-3 py-5 text-xs text-slate-500">Keine Karten</div>
@@ -1600,8 +2412,52 @@ function ApplicationReviewPage() {
     }
   }
 
+  async function handleUpdateApplication(payload: UpdateApplicationPayload) {
+    if (!application) return;
+    setSubmitting(true);
+    try {
+      await updateApplication(application.id, payload);
+      await loadApplication();
+      setNotice({ type: "success", text: "Bewerbung wurde aktualisiert." });
+    } catch (error) {
+      setNotice({ type: "error", text: readableError(error) });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleMarkApplied() {
+    if (!application) return;
+    setSubmitting(true);
+    try {
+      await markApplicationApplied(application.id);
+      await loadApplication();
+      setNotice({ type: "success", text: "Bewerbung wurde als beworben markiert." });
+    } catch (error) {
+      setNotice({ type: "error", text: readableError(error) });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   return (
     <div className="mx-auto max-w-[1504px] px-8 py-7">
+      <header className="flex items-center justify-between">
+        <div>
+          <h1 className="text-[28px] font-bold tracking-[-0.03em]">
+            Bewerbungsdetail
+          </h1>
+          <p className="mt-1 text-sm font-medium text-slate-500">
+            Dokumente, Status, Notizen und Follow-up verwalten.
+          </p>
+        </div>
+        <NavLink
+          className="inline-flex h-11 items-center gap-2 rounded-lg border border-slate-200 bg-white px-5 text-sm font-semibold text-slate-800 shadow-sm transition hover:bg-slate-50"
+          to="/bewerbungen"
+        >
+          Zur Bewerbungsliste
+        </NavLink>
+      </header>
       {notice ? <NoticeBanner notice={notice} onDismiss={() => setNotice(null)} /> : null}
       {loading ? (
         <section className="card mt-6 p-8">
@@ -1617,6 +2473,8 @@ function ApplicationReviewPage() {
           onSaveDocument={handleSaveDocument}
           onApproveDocument={handleApproveDocument}
           onCreateGmailDraft={handleCreateDraft}
+          onUpdateApplication={handleUpdateApplication}
+          onMarkApplied={handleMarkApplied}
         />
       ) : (
         <ErrorState message="Bewerbung wurde nicht gefunden." onRetry={loadApplication} />
@@ -1682,6 +2540,8 @@ function ApplicationReviewCard({
   onSaveDocument,
   onApproveDocument,
   onCreateGmailDraft,
+  onUpdateApplication,
+  onMarkApplied,
 }: {
   application: ApplicationDto;
   submitting: boolean;
@@ -1691,6 +2551,8 @@ function ApplicationReviewCard({
   ) => void;
   onApproveDocument: (document: ApplicationDocumentDto) => void;
   onCreateGmailDraft: () => void;
+  onUpdateApplication?: (payload: UpdateApplicationPayload) => void;
+  onMarkApplied?: () => void;
 }) {
   const [activeType, setActiveType] = useState<ReviewDocumentType>("cover_letter");
   const documents = getLatestReviewDocuments(application);
@@ -1728,6 +2590,14 @@ function ApplicationReviewCard({
           Bitte prüfe und bestätige zuerst den E-Mail-Entwurf.
         </div>
       ) : null}
+      {onUpdateApplication && onMarkApplied ? (
+        <ApplicationManagementControls
+          application={application}
+          submitting={submitting}
+          onUpdateApplication={onUpdateApplication}
+          onMarkApplied={onMarkApplied}
+        />
+      ) : null}
       <div className="mt-5 flex gap-2 border-b border-slate-200">
         {[
           ["cover_letter", "Anschreiben"],
@@ -1758,6 +2628,133 @@ function ApplicationReviewCard({
         <EmptyState text="Für diesen Dokumenttyp wurde noch kein Entwurf erzeugt." />
       )}
     </section>
+  );
+}
+
+function ApplicationManagementControls({
+  application,
+  submitting,
+  onUpdateApplication,
+  onMarkApplied,
+}: {
+  application: ApplicationDto;
+  submitting: boolean;
+  onUpdateApplication: (payload: UpdateApplicationPayload) => void;
+  onMarkApplied: () => void;
+}) {
+  const [notes, setNotes] = useState(application.notes ?? "");
+  const [followUpDate, setFollowUpDate] = useState(dateInputValue(application.follow_up_at));
+  const notesDirty = notes !== (application.notes ?? "");
+  const followUpDirty = followUpDate !== dateInputValue(application.follow_up_at);
+  const due = isFollowUpDue(application.follow_up_at);
+
+  useEffect(() => {
+    setNotes(application.notes ?? "");
+    setFollowUpDate(dateInputValue(application.follow_up_at));
+  }, [application.follow_up_at, application.notes]);
+
+  return (
+    <div className="mt-5 grid grid-cols-[1fr_360px] gap-4">
+      <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-bold">Notizen</h2>
+          <button
+            className="h-9 rounded-lg bg-blue-600 px-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
+            disabled={submitting || !notesDirty}
+            onClick={() => onUpdateApplication({ notes })}
+          >
+            Notizen speichern
+          </button>
+        </div>
+        <textarea
+          className="mt-3 min-h-[130px] w-full rounded-lg border border-slate-200 bg-white p-3 text-sm leading-6 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+          value={notes}
+          onChange={(event) => setNotes(event.target.value)}
+        />
+      </div>
+      <div className="rounded-xl border border-slate-100 bg-white p-4">
+        <h2 className="text-sm font-bold">Aktionen</h2>
+        <div className="mt-3 space-y-3">
+          <label
+            className={cn(
+              "block rounded-lg border p-3",
+              due ? "border-orange-200 bg-orange-50" : "border-slate-200 bg-slate-50",
+            )}
+          >
+            <span className="text-xs font-bold text-slate-600">
+              Follow-up-Datum setzen
+            </span>
+            <input
+              className="mt-2 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+              type="date"
+              value={followUpDate}
+              onChange={(event) => setFollowUpDate(event.target.value)}
+            />
+            {due ? (
+              <span className="mt-2 block text-xs font-bold text-orange-800">
+                Follow-up ist fällig.
+              </span>
+            ) : null}
+          </label>
+          <button
+            className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60"
+            disabled={submitting || !followUpDirty}
+            onClick={() =>
+              onUpdateApplication({ follow_up_at: dateInputToDateTime(followUpDate) })
+            }
+          >
+            Follow-up speichern
+          </button>
+          <button
+            className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60"
+            disabled={submitting || application.status === "applied"}
+            onClick={onMarkApplied}
+          >
+            <Send size={15} />
+            Als beworben markieren
+          </button>
+          <button
+            className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60"
+            disabled={submitting || application.status === "follow_up_due"}
+            onClick={() => onUpdateApplication({ status: "follow_up_due" })}
+          >
+            Follow-up setzen
+          </button>
+          <button
+            className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60"
+            disabled={submitting || application.status === "closed"}
+            onClick={() => onUpdateApplication({ status: "closed" })}
+          >
+            Als abgeschlossen markieren
+          </button>
+        </div>
+      </div>
+      <div className="col-span-2 rounded-xl border border-slate-100 bg-white p-4">
+        <h2 className="text-sm font-bold">Statusverlauf</h2>
+        <div className="mt-3 divide-y divide-slate-100">
+          {application.status_events.length ? (
+            application.status_events.map((event) => (
+              <div key={event.id} className="grid grid-cols-[170px_1fr] gap-4 py-3 text-sm">
+                <div className="font-semibold text-slate-500">
+                  {formatNullableDate(event.created_at)}
+                </div>
+                <div>
+                  <div className="font-bold text-slate-800">
+                    {event.old_status ? applicationStatusText(event.old_status) : "Start"} →{" "}
+                    {applicationStatusText(event.new_status)}
+                  </div>
+                  <div className="mt-1 text-slate-500">{event.note}</div>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="py-4 text-sm font-medium text-slate-500">
+              Noch keine Statusereignisse vorhanden.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -2176,6 +3173,7 @@ function buildPipeline(applications: ApplicationDto[]): PipelineColumn[] {
       tone: group.tone,
       count: items.length,
       cards: items.slice(0, 2).map((application) => ({
+        id: application.id,
         title: application.job_detail.company,
         subtitle: application.job_detail.title,
         date: relativeDate(application.updated_at),
@@ -2236,6 +3234,27 @@ function applicationStatusLabel(status: ApplicationStatus) {
   return labels[status];
 }
 
+function applicationStatusText(status: string) {
+  if (isApplicationStatus(status)) return applicationStatusLabel(status);
+  return status || "Unbekannt";
+}
+
+function isApplicationStatus(status: string): status is ApplicationStatus {
+  return [
+    "new",
+    "interesting",
+    "draft_open",
+    "draft_approved",
+    "gmail_draft_created",
+    "applied",
+    "response_received",
+    "interview",
+    "rejected",
+    "follow_up_due",
+    "closed",
+  ].includes(status);
+}
+
 function applicationStatusTone(status: ApplicationStatus): StatusTone {
   if (["applied", "interview", "draft_approved", "gmail_draft_created"].includes(status)) {
     return "green";
@@ -2280,6 +3299,42 @@ function classificationTone(classification: EmailMessageDto["classification"]): 
   return "gray";
 }
 
+function suggestedMailAction(classification: EmailClassification) {
+  const suggestions: Record<EmailClassification, string> = {
+    confirmation: "Als beworben bestätigen",
+    rejection: "Als Absage markieren",
+    invitation: "Als Gespräch markieren",
+    question: "Antwort erforderlich",
+    follow_up: "Follow-up prüfen",
+    unknown: "Bitte manuell prüfen und bei Bedarf neu klassifizieren.",
+    requires_action: "Antwort erforderlich",
+  };
+  return suggestions[classification];
+}
+
+function suggestedApplicationStatus(
+  classification: EmailClassification,
+): ApplicationStatus | null {
+  const statuses: Partial<Record<EmailClassification, ApplicationStatus>> = {
+    confirmation: "applied",
+    rejection: "rejected",
+    invitation: "interview",
+    question: "response_received",
+    follow_up: "follow_up_due",
+    requires_action: "response_received",
+  };
+  return statuses[classification] ?? null;
+}
+
+function canCreateReplyDraft(classification: EmailClassification) {
+  return classification === "question" || classification === "invitation";
+}
+
+function displaySender(sender: string) {
+  if (!sender.includes("@")) return sender;
+  return titleCase(sender.split("@")[0].replace(/[._-]/g, " "));
+}
+
 function statusLabel(status: SearchCampaignDto["status"]) {
   const labels: Record<SearchCampaignDto["status"], string> = {
     draft: "Entwurf",
@@ -2301,6 +3356,29 @@ function remoteTypeLabel(value: string) {
 function formatDate(value: string | null) {
   if (!value) return "";
   return new Intl.DateTimeFormat("de-DE").format(new Date(value));
+}
+
+function formatNullableDate(value: string | null) {
+  return value ? formatDate(value) : "Nicht gesetzt";
+}
+
+function dateInputValue(value: string | null) {
+  if (!value) return "";
+  return new Date(value).toISOString().slice(0, 10);
+}
+
+function dateInputToDateTime(value: string) {
+  if (!value) return null;
+  return new Date(`${value}T12:00:00`).toISOString();
+}
+
+function isFollowUpDue(value: string | null) {
+  if (!value) return false;
+  const followUpDate = new Date(value);
+  const today = new Date();
+  followUpDate.setHours(0, 0, 0, 0);
+  today.setHours(0, 0, 0, 0);
+  return followUpDate.getTime() <= today.getTime();
 }
 
 function relativeDate(value: string) {

@@ -1,4 +1,4 @@
-from rest_framework import status, viewsets
+from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action, api_view
 from rest_framework.response import Response
 
@@ -8,9 +8,15 @@ from .models import EmailMessage
 from .serializers import EmailMessageSerializer
 
 
-class EmailMessageViewSet(viewsets.ReadOnlyModelViewSet):
+class EmailMessageViewSet(
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.UpdateModelMixin,
+    viewsets.GenericViewSet,
+):
     queryset = EmailMessage.objects.select_related("application", "application__job").all()
     serializer_class = EmailMessageSerializer
+    http_method_names = ["get", "patch", "post", "head", "options"]
 
     @action(detail=True, methods=["post"], url_path="classify")
     def classify(self, request, pk=None):
