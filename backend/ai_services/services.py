@@ -141,6 +141,30 @@ def generate_application_documents(application):
     return [cover_letter, email]
 
 
+def generate_follow_up_document(application):
+    job = application.job
+    next_version = _next_document_version(
+        application, ApplicationDocument.DocumentType.FOLLOW_UP
+    )
+    document = ApplicationDocument.objects.create(
+        application=application,
+        document_type=ApplicationDocument.DocumentType.FOLLOW_UP,
+        title=f"Follow-up zur Bewerbung als {job.title}",
+        version=next_version,
+        content=(
+            "Sehr geehrtes Recruiting-Team,\n\n"
+            f"ich wollte mich kurz nach dem aktuellen Stand meiner Bewerbung für die "
+            f"Position {job.title} erkundigen. Die Aufgabe bei {job.company} "
+            "interessiert mich weiterhin sehr.\n\n"
+            "Falls es bereits einen Zwischenstand gibt oder noch Unterlagen fehlen, "
+            "freue ich mich über eine kurze Rückmeldung.\n\n"
+            "Vielen Dank und freundliche Grüße\n"
+            "Bob"
+        ),
+    )
+    return document
+
+
 def classify_email_message(email):
     subject = email.subject.lower()
     body = email.body.lower()

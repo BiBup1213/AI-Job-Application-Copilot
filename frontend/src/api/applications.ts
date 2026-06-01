@@ -88,6 +88,13 @@ export function generateApplicationDocuments(applicationId: number) {
   );
 }
 
+export function generateFollowUpDocument(applicationId: number) {
+  return apiRequest<ApplicationDocumentDto>(
+    `/api/applications/${applicationId}/generate-follow-up/`,
+    { method: "POST" },
+  );
+}
+
 export function updateApplicationDocument(
   applicationId: number,
   documentId: number,

@@ -3,7 +3,7 @@ from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from ai_services.services import generate_application_documents
+from ai_services.services import generate_application_documents, generate_follow_up_document
 
 from .models import Application, ApplicationDocument, StatusEvent
 from .serializers import ApplicationDocumentSerializer, ApplicationSerializer
@@ -49,6 +49,21 @@ class ApplicationViewSet(viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED,
         )
 
+    @action(detail=True, methods=["post"], url_path="generate-follow-up")
+    def generate_follow_up(self, request, pk=None):
+        application = self.get_object()
+        document = generate_follow_up_document(application)
+        StatusEvent.objects.create(
+            application=application,
+            old_status=application.status,
+            new_status=application.status,
+            note=f"Follow-up-Entwurf erstellt: {document.title}",
+        )
+        return Response(
+            ApplicationDocumentSerializer(document).data,
+            status=status.HTTP_201_CREATED,
+        )
+
     @action(detail=True, methods=["post"], url_path="approve-document")
     def approve_document(self, request, pk=None):
         application = self.get_object()
@@ -64,7 +79,16 @@ class ApplicationViewSet(viewsets.ModelViewSet):
             )
         document.is_approved = True
         document.save(update_fields=["is_approved", "updated_at"])
-        if application.documents.filter(is_approved=True).exists():
+        if document.document_type in [
+            ApplicationDocument.DocumentType.COVER_LETTER,
+            ApplicationDocument.DocumentType.EMAIL,
+        ] and application.documents.filter(
+            document_type__in=[
+                ApplicationDocument.DocumentType.COVER_LETTER,
+                ApplicationDocument.DocumentType.EMAIL,
+            ],
+            is_approved=True,
+        ).exists():
             old_status = application.status
             application.status = Application.Status.DRAFT_APPROVED
             application.save(update_fields=["status", "updated_at"])
@@ -75,6 +99,13 @@ class ApplicationViewSet(viewsets.ModelViewSet):
                     new_status=application.status,
                     note=f"Dokument freigegeben: {document.title}",
                 )
+        else:
+            StatusEvent.objects.create(
+                application=application,
+                old_status=application.status,
+                new_status=application.status,
+                note=f"Dokument freigegeben: {document.title}",
+            )
         return Response(ApplicationDocumentSerializer(document).data)
 
     @action(

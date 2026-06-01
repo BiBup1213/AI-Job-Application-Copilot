@@ -56,6 +56,8 @@ The `Bewerbungen` page lists backend applications with status filters, quick act
 
 The `Mail-Zentrale` page lists simulated mail messages, supports mock sync and reclassification, lets messages be linked to applications, and offers explicit status-update suggestions for linked applications.
 
+The `Follow-ups` page shows due and planned follow-ups, lets dates be set, creates German follow-up drafts, and reuses the document editor for explicit review and approval.
+
 Creating a simulated Gmail draft remains human-in-the-loop: the frontend opens a document review workflow where generated documents can be edited and explicitly approved before calling the mock Gmail draft endpoint.
 
 ## Run Backend And Frontend Together
@@ -97,6 +99,7 @@ The frontend uses these API calls:
 - `GET /api/mail/messages/`
 - `POST /api/jobs/{id}/create-application/`
 - `POST /api/applications/{id}/generate-documents/`
+- `POST /api/applications/{id}/generate-follow-up/`
 - `POST /api/applications/{id}/approve-document/`
 - `PATCH /api/applications/{id}/documents/{document_id}/`
 - `POST /api/applications/{id}/create-gmail-draft/`
@@ -128,6 +131,7 @@ GET  /api/applications/
 GET  /api/applications/{id}/
 PATCH /api/applications/{id}/
 POST /api/applications/{id}/generate-documents/
+POST /api/applications/{id}/generate-follow-up/
 POST /api/applications/{id}/approve-document/
 PATCH /api/applications/{id}/documents/{document_id}/
 POST /api/applications/{id}/create-gmail-draft/

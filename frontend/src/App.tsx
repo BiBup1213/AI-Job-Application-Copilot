@@ -28,6 +28,7 @@ import {
   approveApplicationDocument,
   createGmailDraft,
   generateApplicationDocuments,
+  generateFollowUpDocument,
   getApplication,
   getApplications,
   markApplicationApplied,
@@ -136,6 +137,7 @@ type TodayItem = {
   subtitle: string;
   count: number;
   icon: LucideIcon;
+  path?: string;
 };
 
 type ReviewDocumentType = "cover_letter" | "email";
@@ -158,6 +160,7 @@ type MailFilterKey =
   | "invitation"
   | "rejection"
   | "unknown";
+type FollowUpFilterKey = "all" | "due" | "planned" | "without_date" | "done";
 
 function cn(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
@@ -271,6 +274,16 @@ const mailFilters: Array<{
   },
 ];
 
+const followUpFilters: Array<{ key: FollowUpFilterKey; label: string }> = [
+  { key: "all", label: "Alle" },
+  { key: "due", label: "Fällig" },
+  { key: "planned", label: "Geplant" },
+  { key: "without_date", label: "Ohne Datum" },
+  { key: "done", label: "Erledigt" },
+];
+
+const followUpIntervalDays = 7;
+
 export function App() {
   return (
     <div className="min-h-screen bg-[#f7f9fd] text-slate-950">
@@ -283,7 +296,7 @@ export function App() {
           <Route path="/bewerbungen/:id" element={<ApplicationReviewPage />} />
           <Route path="/bewerbungen" element={<ApplicationsPage />} />
           <Route path="/mail" element={<MailPage />} />
-          <Route path="/follow-ups" element={<PlaceholderPage title="Follow-ups" />} />
+          <Route path="/follow-ups" element={<FollowUpsPage />} />
           <Route path="/profil" element={<PlaceholderPage title="Profil" />} />
           <Route path="/einstellungen" element={<PlaceholderPage title="Einstellungen" />} />
           <Route path="*" element={<Navigate to="/" replace />} />
@@ -1565,6 +1578,398 @@ function MailDetailModal({
   );
 }
 
+function FollowUpsPage() {
+  const [applications, setApplications] = useState<ApplicationDto[]>([]);
+  const [mailMessages, setMailMessages] = useState<EmailMessageDto[]>([]);
+  const [activeFilter, setActiveFilter] = useState<FollowUpFilterKey>("all");
+  const [reviewApplication, setReviewApplication] = useState<ApplicationDto | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [busyApplicationId, setBusyApplicationId] = useState<number | null>(null);
+
+  const loadFollowUpData = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const [applicationData, mailData] = await Promise.all([
+        getApplications(),
+        getMailMessages(),
+      ]);
+      setApplications(applicationData);
+      setMailMessages(mailData);
+    } catch (error) {
+      setLoadError(readableError(error));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadFollowUpData();
+  }, [loadFollowUpData]);
+
+  const followUpApplications = useMemo(
+    () =>
+      applications.filter((application) =>
+        isFollowUpRelevant(application, mailMessages),
+      ),
+    [applications, mailMessages],
+  );
+  const filteredApplications = useMemo(
+    () =>
+      followUpApplications.filter((application) =>
+        matchesFollowUpFilter(application, activeFilter, mailMessages),
+      ),
+    [activeFilter, followUpApplications, mailMessages],
+  );
+
+  async function handlePatchApplication(
+    applicationId: number,
+    payload: UpdateApplicationPayload,
+    successText: string,
+  ) {
+    setNotice(null);
+    setBusyApplicationId(applicationId);
+    try {
+      await updateApplication(applicationId, payload);
+      await loadFollowUpData();
+      setNotice({ type: "success", text: successText });
+    } catch (error) {
+      setNotice({ type: "error", text: readableError(error) });
+    } finally {
+      setBusyApplicationId(null);
+    }
+  }
+
+  async function handleGenerateFollowUp(application: ApplicationDto) {
+    setNotice(null);
+    setBusyApplicationId(application.id);
+    try {
+      await generateFollowUpDocument(application.id);
+      const updatedApplication = await getApplication(application.id);
+      setReviewApplication(updatedApplication);
+      await loadFollowUpData();
+      setNotice({ type: "success", text: "Follow-up-Entwurf wurde erstellt." });
+    } catch (error) {
+      setNotice({ type: "error", text: readableError(error) });
+    } finally {
+      setBusyApplicationId(null);
+    }
+  }
+
+  async function handleSaveFollowUpDocument(
+    document: ApplicationDocumentDto,
+    payload: Pick<ApplicationDocumentDto, "title" | "content">,
+  ) {
+    if (!reviewApplication) return;
+    setNotice(null);
+    try {
+      await updateApplicationDocument(reviewApplication.id, document.id, payload);
+      const updatedApplication = await getApplication(reviewApplication.id);
+      setReviewApplication(updatedApplication);
+      await loadFollowUpData();
+      setNotice({ type: "success", text: "Follow-up-Entwurf wurde gespeichert." });
+    } catch (error) {
+      setNotice({ type: "error", text: readableError(error) });
+    }
+  }
+
+  async function handleApproveFollowUpDocument(document: ApplicationDocumentDto) {
+    if (!reviewApplication) return;
+    setNotice(null);
+    try {
+      await approveApplicationDocument(reviewApplication.id, document.id);
+      const updatedApplication = await getApplication(reviewApplication.id);
+      setReviewApplication(updatedApplication);
+      await loadFollowUpData();
+      setNotice({ type: "success", text: "Follow-up-Entwurf wurde freigegeben." });
+    } catch (error) {
+      setNotice({ type: "error", text: readableError(error) });
+    }
+  }
+
+  async function handleFollowUpDone(application: ApplicationDto) {
+    const nextFollowUp = new Date();
+    nextFollowUp.setDate(nextFollowUp.getDate() + 14);
+    await handlePatchApplication(
+      application.id,
+      {
+        status: "applied",
+        follow_up_at: nextFollowUp.toISOString(),
+      },
+      "Follow-up wurde als erledigt markiert.",
+    );
+  }
+
+  return (
+    <div className="mx-auto max-w-[1504px] px-8 py-7">
+      <header className="flex items-center justify-between">
+        <div>
+          <h1 className="text-[28px] font-bold tracking-[-0.03em]">Follow-ups</h1>
+          <p className="mt-1 text-sm font-medium text-slate-500">
+            Fällige Bewerbungs-Follow-ups planen, formulieren und abschließen.
+          </p>
+        </div>
+        <NavLink
+          className="inline-flex h-11 items-center gap-2 rounded-lg border border-slate-200 bg-white px-5 text-sm font-semibold text-slate-800 shadow-sm transition hover:bg-slate-50"
+          to="/bewerbungen"
+        >
+          Bewerbungen öffnen
+        </NavLink>
+      </header>
+      {notice ? <NoticeBanner notice={notice} onDismiss={() => setNotice(null)} /> : null}
+      {loadError ? (
+        <ErrorState message={loadError} onRetry={loadFollowUpData} />
+      ) : (
+        <>
+          <section className="card mt-6 p-4">
+            <div className="flex flex-wrap gap-2">
+              {followUpFilters.map((filter) => (
+                <button
+                  key={filter.key}
+                  className={cn(
+                    "rounded-lg border px-3 py-2 text-sm font-bold transition",
+                    activeFilter === filter.key
+                      ? "border-blue-200 bg-blue-50 text-blue-700"
+                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+                  )}
+                  onClick={() => setActiveFilter(filter.key)}
+                >
+                  {filter.label}
+                </button>
+              ))}
+            </div>
+          </section>
+          <section className="mt-4 space-y-3">
+            {loading ? (
+              <section className="card p-4">
+                <SkeletonRows count={5} />
+              </section>
+            ) : filteredApplications.length ? (
+              filteredApplications.map((application) => (
+                <FollowUpCard
+                  key={application.id}
+                  application={application}
+                  latestMail={latestMailForApplication(application.id, mailMessages)}
+                  busy={busyApplicationId === application.id}
+                  onSetFollowUp={(value) =>
+                    handlePatchApplication(
+                      application.id,
+                      { follow_up_at: dateInputToDateTime(value) },
+                      "Follow-up-Datum wurde gespeichert.",
+                    )
+                  }
+                  onGenerateDraft={() => handleGenerateFollowUp(application)}
+                  onReviewDraft={() => setReviewApplication(application)}
+                  onDone={() => handleFollowUpDone(application)}
+                />
+              ))
+            ) : (
+              <section className="card p-8">
+                <EmptyState text="Keine Follow-ups für diesen Filter gefunden." />
+              </section>
+            )}
+          </section>
+        </>
+      )}
+      {reviewApplication ? (
+        <FollowUpReviewModal
+          application={reviewApplication}
+          onClose={() => setReviewApplication(null)}
+          onSaveDocument={handleSaveFollowUpDocument}
+          onApproveDocument={handleApproveFollowUpDocument}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function FollowUpCard({
+  application,
+  latestMail,
+  busy,
+  onSetFollowUp,
+  onGenerateDraft,
+  onReviewDraft,
+  onDone,
+}: {
+  application: ApplicationDto;
+  latestMail: EmailMessageDto | null;
+  busy: boolean;
+  onSetFollowUp: (value: string) => void;
+  onGenerateDraft: () => void;
+  onReviewDraft: () => void;
+  onDone: () => void;
+}) {
+  const [followUpDate, setFollowUpDate] = useState(dateInputValue(application.follow_up_at));
+  const due = isApplicationFollowUpDue(application, latestMail);
+  const followUpDocument = latestDocumentOfType(application, "follow_up");
+
+  useEffect(() => {
+    setFollowUpDate(dateInputValue(application.follow_up_at));
+  }, [application.follow_up_at]);
+
+  function stopAndRun(event: MouseEvent, action: () => void) {
+    event.stopPropagation();
+    action();
+  }
+
+  return (
+    <article className="card p-5">
+      <div className="grid grid-cols-[1fr_88px_168px] items-start gap-5">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-slate-500">
+            {application.job_detail.company}
+          </div>
+          <h2 className="mt-1 truncate text-lg font-bold tracking-[-0.02em]">
+            {application.job_detail.title}
+          </h2>
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-slate-500">
+            <span>{application.job_detail.location || "Standort offen"}</span>
+            <span>·</span>
+            <span>Seit Bewerbung: {daysSinceDate(application.applied_at)}</span>
+            {latestMail ? (
+              <>
+                <span>·</span>
+                <span>Letzte Mail: {classificationLabel(latestMail.classification)}</span>
+              </>
+            ) : null}
+          </div>
+        </div>
+        <ScoreBadge score={application.match_score ?? 0} compact />
+        <StatusBadge
+          label={applicationStatusLabel(application.status)}
+          tone={applicationStatusTone(application.status)}
+        />
+      </div>
+      <div className="mt-4 grid grid-cols-4 gap-3">
+        <ApplicationMeta label="Beworben am" value={formatNullableDate(application.applied_at)} />
+        <ApplicationMeta
+          label="Follow-up"
+          value={formatNullableDate(application.follow_up_at)}
+          due={due}
+        />
+        <ApplicationMeta
+          label="Entwurf"
+          value={followUpDocument ? `Version ${followUpDocument.version}` : "Nicht erstellt"}
+        />
+        <ApplicationMeta
+          label="Mail-Status"
+          value={latestMail ? classificationLabel(latestMail.classification) : "Keine Mail"}
+        />
+      </div>
+      <div className="mt-4 flex flex-wrap items-end gap-2 border-t border-slate-100 pt-4">
+        <label
+          className={cn(
+            "flex h-9 items-center gap-2 rounded-lg border px-3 text-sm font-semibold",
+            due
+              ? "border-orange-200 bg-orange-50 text-orange-800"
+              : "border-slate-200 bg-white text-slate-700",
+          )}
+        >
+          Follow-up-Datum setzen
+          <input
+            className="h-7 rounded-md border border-slate-200 px-2 text-sm outline-none"
+            type="date"
+            value={followUpDate}
+            onChange={(event) => setFollowUpDate(event.target.value)}
+          />
+        </label>
+        <button
+          className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60"
+          disabled={busy || followUpDate === dateInputValue(application.follow_up_at)}
+          onClick={(event) => stopAndRun(event, () => onSetFollowUp(followUpDate))}
+        >
+          Speichern
+        </button>
+        <button
+          className="inline-flex h-9 items-center gap-2 rounded-lg bg-blue-600 px-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
+          disabled={busy}
+          onClick={(event) => stopAndRun(event, onGenerateDraft)}
+        >
+          {busy ? <Loader2 size={15} className="animate-spin" /> : <PenLine size={15} />}
+          Follow-up-Entwurf erstellen
+        </button>
+        <button
+          className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-60"
+          disabled={!followUpDocument}
+          onClick={(event) => stopAndRun(event, onReviewDraft)}
+        >
+          Entwurf prüfen
+        </button>
+        <button
+          className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60"
+          disabled={busy}
+          onClick={(event) => stopAndRun(event, onDone)}
+        >
+          Follow-up erledigt
+        </button>
+        <NavLink
+          className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 hover:bg-slate-50"
+          to={`/bewerbungen/${application.id}`}
+        >
+          Bewerbung öffnen
+        </NavLink>
+      </div>
+    </article>
+  );
+}
+
+function FollowUpReviewModal({
+  application,
+  onClose,
+  onSaveDocument,
+  onApproveDocument,
+}: {
+  application: ApplicationDto;
+  onClose: () => void;
+  onSaveDocument: (
+    document: ApplicationDocumentDto,
+    payload: Pick<ApplicationDocumentDto, "title" | "content">,
+  ) => void;
+  onApproveDocument: (document: ApplicationDocumentDto) => void;
+}) {
+  const document = latestDocumentOfType(application, "follow_up");
+
+  return (
+    <div className="fixed inset-0 z-20 flex items-center justify-center bg-slate-950/35 px-4 py-8">
+      <div className="max-h-[92vh] w-full max-w-4xl overflow-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="text-sm font-semibold text-slate-500">
+              {application.job_detail.company}
+            </div>
+            <h2 className="mt-1 text-xl font-bold tracking-[-0.02em]">
+              Follow-up-Entwurf prüfen
+            </h2>
+            <p className="mt-1 text-sm text-slate-500">
+              {application.job_detail.title}
+            </p>
+          </div>
+          <button
+            type="button"
+            className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"
+            onClick={onClose}
+          >
+            <X size={20} />
+          </button>
+        </div>
+        {document ? (
+          <DocumentEditor
+            key={document.id}
+            document={document}
+            onSave={onSaveDocument}
+            onApprove={onApproveDocument}
+          />
+        ) : (
+          <EmptyState text="Für diese Bewerbung wurde noch kein Follow-up-Entwurf erstellt." />
+        )}
+      </div>
+    </div>
+  );
+}
+
 function KpiCard({ kpi, loading }: { kpi: Kpi; loading: boolean }) {
   const Icon = kpi.icon;
   return (
@@ -2025,8 +2430,9 @@ function TodayImportantPanel({
           items.map((item) => {
             const Icon = item.icon;
             return (
-              <button
+              <NavLink
                 key={item.title}
+                to={item.path ?? "/"}
                 className="grid w-full grid-cols-[44px_1fr_34px_18px] items-center gap-3 rounded-lg border border-slate-100 bg-white px-3 py-3 text-left transition hover:border-blue-200 hover:shadow-sm"
               >
                 <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-blue-100 bg-blue-50 text-blue-700">
@@ -2042,7 +2448,7 @@ function TodayImportantPanel({
                   {item.count}
                 </span>
                 <ChevronRight size={17} className="text-slate-500" />
-              </button>
+              </NavLink>
             );
           })
         )}
@@ -3197,18 +3603,21 @@ function buildTodayItems(
       subtitle: "Bewerbungen abschließen",
       count: draftCount,
       icon: FileText,
+      path: "/bewerbungen",
     },
     {
       title: `${actionMailCount} E-Mail beantworten`,
       subtitle: "Rückfragen und Einladungen prüfen",
       count: actionMailCount,
       icon: Mail,
+      path: "/mail",
     },
     {
       title: `${followUpCount} Follow-ups verschicken`,
       subtitle: "Überfällige Follow-ups",
       count: followUpCount,
       icon: Bell,
+      path: "/follow-ups",
     },
   ];
 }
@@ -3330,6 +3739,94 @@ function canCreateReplyDraft(classification: EmailClassification) {
   return classification === "question" || classification === "invitation";
 }
 
+function latestMailForApplication(
+  applicationId: number,
+  mailMessages: EmailMessageDto[],
+) {
+  return (
+    mailMessages
+      .filter((message) => message.application === applicationId)
+      .sort(
+        (first, second) =>
+          new Date(second.received_at).getTime() -
+          new Date(first.received_at).getTime(),
+      )[0] ?? null
+  );
+}
+
+function isFollowUpRelevant(
+  application: ApplicationDto,
+  mailMessages: EmailMessageDto[],
+) {
+  if (application.status === "closed" || application.status === "rejected") return false;
+  return (
+    application.status === "applied" ||
+    application.status === "follow_up_due" ||
+    Boolean(application.follow_up_at) ||
+    isApplicationFollowUpDue(
+      application,
+      latestMailForApplication(application.id, mailMessages),
+    )
+  );
+}
+
+function matchesFollowUpFilter(
+  application: ApplicationDto,
+  filter: FollowUpFilterKey,
+  mailMessages: EmailMessageDto[],
+) {
+  const latestMail = latestMailForApplication(application.id, mailMessages);
+  if (filter === "all") return true;
+  if (filter === "due") return isApplicationFollowUpDue(application, latestMail);
+  if (filter === "planned") return isFollowUpPlanned(application);
+  if (filter === "without_date") {
+    return application.status === "applied" && !application.follow_up_at;
+  }
+  return (
+    application.status === "applied" &&
+    !isApplicationFollowUpDue(application, latestMail)
+  );
+}
+
+function isApplicationFollowUpDue(
+  application: ApplicationDto,
+  latestMail: EmailMessageDto | null,
+) {
+  if (application.status === "follow_up_due") return true;
+  if (isFollowUpDue(application.follow_up_at)) return true;
+  const hasResponse = latestMail
+    ? ["question", "invitation", "rejection", "follow_up", "requires_action"].includes(
+        latestMail.classification,
+      )
+    : false;
+  return (
+    application.status === "applied" &&
+    !application.follow_up_at &&
+    !hasResponse &&
+    daysSince(application.applied_at) >= followUpIntervalDays
+  );
+}
+
+function isFollowUpPlanned(application: ApplicationDto) {
+  if (!application.follow_up_at) return false;
+  const followUpDate = new Date(application.follow_up_at);
+  const today = new Date();
+  followUpDate.setHours(0, 0, 0, 0);
+  today.setHours(0, 0, 0, 0);
+  return followUpDate.getTime() > today.getTime();
+}
+
+function latestDocumentOfType(
+  application: ApplicationDto,
+  documentType: ApplicationDocumentDto["document_type"],
+) {
+  return (
+    application.documents
+      .filter((document) => document.document_type === documentType)
+      .sort((first, second) => second.version - first.version)[0] ?? null
+  );
+}
+
 function displaySender(sender: string) {
   if (!sender.includes("@")) return sender;
   return titleCase(sender.split("@")[0].replace(/[._-]/g, " "));
@@ -3370,6 +3867,22 @@ function dateInputValue(value: string | null) {
 function dateInputToDateTime(value: string) {
   if (!value) return null;
   return new Date(`${value}T12:00:00`).toISOString();
+}
+
+function daysSince(value: string | null) {
+  if (!value) return 0;
+  return Math.max(
+    0,
+    Math.floor((Date.now() - new Date(value).getTime()) / 86_400_000),
+  );
+}
+
+function daysSinceDate(value: string | null) {
+  if (!value) return "Nicht gesetzt";
+  const days = daysSince(value);
+  if (days === 0) return "Heute";
+  if (days === 1) return "1 Tag";
+  return `${days} Tage`;
 }
 
 function isFollowUpDue(value: string | null) {
