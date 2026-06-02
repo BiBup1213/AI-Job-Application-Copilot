@@ -63,7 +63,7 @@ VITE_API_BASE_URL=http://127.0.0.1:8000
 
 If the backend is unavailable, the dashboard shows a clean error state instead of crashing.
 
-The sidebar uses React Router routes for Übersicht, Suchkampagnen, Gefundene Jobs, Bewerbungen, Mail-Zentrale, Follow-ups, Profil, and Einstellungen. Profil and Einstellungen remain placeholders; the core MVP workflow pages use backend data.
+The sidebar uses React Router routes for Übersicht, Suchkampagnen, Gefundene Jobs, Bewerbungen, Mail-Zentrale, Follow-ups, Profil, and Einstellungen. Einstellungen remains a placeholder; the core MVP workflow pages use backend data.
 
 ## Current Features
 
@@ -74,6 +74,7 @@ The sidebar uses React Router routes for Übersicht, Suchkampagnen, Gefundene Jo
 - `Bewerbungen` page with status filters, quick actions, follow-up dates, notes, and links into the document review/detail view.
 - `Mail-Zentrale` page with mock sync, reclassification, application linking, and explicit status-update suggestions.
 - `Follow-ups` page with due/planned follow-ups, German follow-up drafts, and explicit review/approval.
+- `Profil` page with an editable candidate profile used for future job matching and newly generated application documents.
 
 ## Not Implemented Yet
 
@@ -121,6 +122,8 @@ The frontend uses these API calls:
 - `GET /api/applications/{id}/`
 - `PATCH /api/applications/{id}/`
 - `GET /api/mail/messages/`
+- `GET /api/profile/`
+- `PATCH /api/profile/`
 - `POST /api/jobs/{id}/create-application/`
 - `POST /api/applications/{id}/generate-documents/`
 - `POST /api/applications/{id}/generate-follow-up/`
@@ -138,6 +141,8 @@ The frontend uses these API calls:
 
 ```text
 GET  /api/dashboard/summary/
+GET  /api/profile/
+PATCH /api/profile/
 
 GET  /api/campaigns/
 POST /api/campaigns/
@@ -172,6 +177,7 @@ POST /api/mail/messages/{id}/classify/
 - Campaign runs create realistic mock job postings.
 - Job evaluation creates deterministic `JobMatch` entries.
 - Application document generation creates German cover letter and email drafts.
+- Candidate profile data from `/api/profile/` is used for new matching and newly generated documents; existing generated documents are not regenerated automatically.
 - AI-like behavior is routed through `backend/ai_services/providers/mock.py`.
 - `backend/ai_services/providers/openai_provider.py` can use OpenAI for job matching, application documents, follow-up drafts, and email classification when explicitly configured.
 - Gmail draft creation is simulated only.
@@ -210,11 +216,11 @@ OpenAI usage is optional and disabled by default.
    `POST /api/mail/messages/{id}/classify/` from the frontend flow or an API
    client.
 
-Job matching, application document generation, and follow-up drafting send job
-or application context to OpenAI only when `AI_PROVIDER=openai`. Email
-classification sends only sender, subject, and body in that same mode. Generated
-responses are validated as structured JSON and fall back to the mock provider on
-errors.
+Job matching, application document generation, and follow-up drafting send the
+stored candidate profile plus job or application context to OpenAI only when
+`AI_PROVIDER=openai`. Email classification sends only sender, subject, and body
+in that same mode. Generated responses are validated as structured JSON and fall
+back to the mock provider on errors.
 
 ## Demo Data
 
@@ -225,6 +231,7 @@ errors.
 - Beispiel Commerce AG / E-Commerce Developer / Web Operations / 83%
 - Stadt Wolfenbüttel / IT-Servicedesk Mitarbeiter*in / 76%
 - 2 search campaigns
+- a demo candidate profile
 - 3 email messages
 - several applications with different statuses
 - status events and draft documents

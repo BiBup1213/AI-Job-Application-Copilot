@@ -62,6 +62,12 @@ import {
   type EmailMessageDto,
 } from "./api/mail";
 import {
+  getCandidateProfile,
+  updateCandidateProfile,
+  type CandidateProfileDto,
+  type CandidateProfilePayload,
+} from "./api/profile";
+import {
   navigationItems,
   type Job,
   type Kpi,
@@ -133,6 +139,26 @@ type ManualJobFormState = {
   requirements: string;
   nice_to_have: string;
   tags: string;
+};
+
+type CandidateProfileFormState = {
+  full_name: string;
+  email: string;
+  location: string;
+  target_roles: string;
+  preferred_locations: string;
+  remote_preference: string;
+  salary_expectation: string;
+  availability: string;
+  skills: string;
+  tech_stack: string;
+  projects: string;
+  experience_summary: string;
+  education_summary: string;
+  strengths: string;
+  no_gos: string;
+  application_tone: string;
+  extra_context: string;
 };
 
 type DisplayCampaign = {
@@ -244,6 +270,26 @@ const defaultManualJobForm: ManualJobFormState = {
   tags: "",
 };
 
+const defaultProfileForm: CandidateProfileFormState = {
+  full_name: "",
+  email: "",
+  location: "",
+  target_roles: "",
+  preferred_locations: "",
+  remote_preference: "",
+  salary_expectation: "",
+  availability: "",
+  skills: "",
+  tech_stack: "",
+  projects: "",
+  experience_summary: "",
+  education_summary: "",
+  strengths: "",
+  no_gos: "",
+  application_tone: "",
+  extra_context: "",
+};
+
 const applicationFilters: Array<{
   key: ApplicationFilterKey;
   label: string;
@@ -321,7 +367,7 @@ export function App() {
           <Route path="/bewerbungen" element={<ApplicationsPage />} />
           <Route path="/mail" element={<MailPage />} />
           <Route path="/follow-ups" element={<FollowUpsPage />} />
-          <Route path="/profil" element={<PlaceholderPage title="Profil" />} />
+          <Route path="/profil" element={<ProfilePage />} />
           <Route path="/einstellungen" element={<PlaceholderPage title="Einstellungen" />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
@@ -744,6 +790,238 @@ function PlaceholderPage({ title }: { title: string }) {
           späteren Schritt umgesetzt; das Dashboard bleibt unter Übersicht verfügbar.
         </p>
       </section>
+    </div>
+  );
+}
+
+function ProfilePage() {
+  const [profile, setProfile] = useState<CandidateProfileDto | null>(null);
+  const [form, setForm] = useState<CandidateProfileFormState>(defaultProfileForm);
+  const [savedForm, setSavedForm] = useState<CandidateProfileFormState>(defaultProfileForm);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const loadProfile = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const data = await getCandidateProfile();
+      const nextForm = profileToForm(data);
+      setProfile(data);
+      setForm(nextForm);
+      setSavedForm(nextForm);
+    } catch (error) {
+      setLoadError(readableError(error));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadProfile();
+  }, [loadProfile]);
+
+  async function handleSave() {
+    setNotice(null);
+    setSaving(true);
+    try {
+      const updatedProfile = await updateCandidateProfile(profilePayload(form));
+      const nextForm = profileToForm(updatedProfile);
+      setProfile(updatedProfile);
+      setForm(nextForm);
+      setSavedForm(nextForm);
+      setNotice({ type: "success", text: "Profil wurde gespeichert." });
+    } catch (error) {
+      setNotice({ type: "error", text: readableError(error) });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const dirty = JSON.stringify(form) !== JSON.stringify(savedForm);
+
+  return (
+    <div className="mx-auto max-w-[1504px] px-8 py-7">
+      <header className="flex items-center justify-between">
+        <div>
+          <h1 className="text-[28px] font-bold tracking-[-0.03em]">Profil</h1>
+          <p className="mt-1 text-sm font-medium text-slate-500">
+            Dieses Profil wird für neue Jobbewertungen und neu generierte Bewerbungsentwürfe genutzt.
+          </p>
+        </div>
+        <NavLink
+          className="inline-flex h-11 items-center gap-2 rounded-lg border border-slate-200 bg-white px-5 text-sm font-semibold text-slate-800 shadow-sm transition hover:bg-slate-50"
+          to="/"
+        >
+          Zur Übersicht
+        </NavLink>
+      </header>
+
+      {notice ? <NoticeBanner notice={notice} onDismiss={() => setNotice(null)} /> : null}
+      {loadError ? (
+        <ErrorState message={loadError} onRetry={loadProfile} />
+      ) : loading ? (
+        <section className="card mt-6 p-5">
+          <SkeletonRows count={8} />
+        </section>
+      ) : (
+        <>
+          <section className="mt-6 grid grid-cols-[1fr_0.92fr] gap-4">
+            <ProfileSection title="Persönliche Daten">
+              <TextField
+                label="Vollständiger Name"
+                value={form.full_name}
+                onChange={(value) => setForm({ ...form, full_name: value })}
+              />
+              <TextField
+                label="E-Mail"
+                value={form.email}
+                onChange={(value) => setForm({ ...form, email: value })}
+              />
+              <TextField
+                label="Standort"
+                value={form.location}
+                onChange={(value) => setForm({ ...form, location: value })}
+              />
+            </ProfileSection>
+
+            <ProfileSection title="Zielrollen">
+              <TextField
+                label="Zielrollen"
+                value={form.target_roles}
+                onChange={(value) => setForm({ ...form, target_roles: value })}
+              />
+              <TextField
+                label="Bevorzugte Standorte"
+                value={form.preferred_locations}
+                onChange={(value) => setForm({ ...form, preferred_locations: value })}
+              />
+              <TextField
+                label="Verfügbarkeit"
+                value={form.availability}
+                onChange={(value) => setForm({ ...form, availability: value })}
+              />
+            </ProfileSection>
+
+            <ProfileSection title="Skills & Tech Stack">
+              <TextField
+                label="Skills"
+                value={form.skills}
+                onChange={(value) => setForm({ ...form, skills: value })}
+              />
+              <TextField
+                label="Tech Stack"
+                value={form.tech_stack}
+                onChange={(value) => setForm({ ...form, tech_stack: value })}
+              />
+              <TextField
+                label="Stärken"
+                value={form.strengths}
+                onChange={(value) => setForm({ ...form, strengths: value })}
+              />
+            </ProfileSection>
+
+            <ProfileSection title="Präferenzen">
+              <TextField
+                label="Remote-Präferenz"
+                value={form.remote_preference}
+                onChange={(value) => setForm({ ...form, remote_preference: value })}
+              />
+              <TextField
+                label="Gehaltsvorstellung"
+                value={form.salary_expectation}
+                onChange={(value) => setForm({ ...form, salary_expectation: value })}
+              />
+            </ProfileSection>
+          </section>
+
+          <section className="mt-4 grid grid-cols-2 gap-4">
+            <ProfileSection title="Projekte">
+              <ProfileTextarea
+                label="Projekte"
+                value={form.projects}
+                onChange={(value) => setForm({ ...form, projects: value })}
+                rows={7}
+              />
+              <p className="text-xs font-medium text-slate-500">
+                Kommagetrennt oder als kurze Projektbeschreibungen erfassen.
+              </p>
+            </ProfileSection>
+
+            <ProfileSection title="Erfahrung & Ausbildung">
+              <ProfileTextarea
+                label="Erfahrungszusammenfassung"
+                value={form.experience_summary}
+                onChange={(value) => setForm({ ...form, experience_summary: value })}
+                rows={4}
+              />
+              <ProfileTextarea
+                label="Ausbildung"
+                value={form.education_summary}
+                onChange={(value) => setForm({ ...form, education_summary: value })}
+                rows={4}
+              />
+            </ProfileSection>
+
+            <ProfileSection title="Bewerbungston">
+              <TextField
+                label="Gewünschter Ton"
+                value={form.application_tone}
+                onChange={(value) => setForm({ ...form, application_tone: value })}
+              />
+              <ProfileTextarea
+                label="Zusatzkontext"
+                value={form.extra_context}
+                onChange={(value) => setForm({ ...form, extra_context: value })}
+                rows={6}
+              />
+            </ProfileSection>
+
+            <ProfileSection title="Ausschlüsse / No-Gos">
+              <ProfileTextarea
+                label="Was soll vermieden werden?"
+                value={form.no_gos}
+                onChange={(value) => setForm({ ...form, no_gos: value })}
+                rows={6}
+              />
+              <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-medium leading-5 text-blue-800">
+                No-Gos werden an die KI übergeben und im mock-basierten Matching als negatives Signal berücksichtigt.
+              </div>
+            </ProfileSection>
+          </section>
+
+          <section className="sticky bottom-0 mt-5 rounded-xl border border-slate-200 bg-white/95 px-5 py-4 shadow-[0_-12px_32px_rgba(15,23,42,0.08)] backdrop-blur">
+            <div className="flex items-center justify-between gap-4">
+              <div className="text-sm font-medium text-slate-500">
+                {dirty
+                  ? "Es gibt ungespeicherte Änderungen."
+                  : profile?.updated_at
+                    ? `Zuletzt gespeichert: ${formatDate(profile.updated_at)}`
+                    : "Noch nicht gespeichert."}
+              </div>
+              <div className="flex gap-3">
+                <button
+                  className="h-10 rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60"
+                  disabled={!dirty || saving}
+                  onClick={() => setForm(savedForm)}
+                >
+                  Änderungen verwerfen
+                </button>
+                <button
+                  className="inline-flex h-10 items-center gap-2 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-70"
+                  disabled={!dirty || saving}
+                  onClick={handleSave}
+                >
+                  {saving ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
+                  Speichern
+                </button>
+              </div>
+            </div>
+          </section>
+        </>
+      )}
     </div>
   );
 }
@@ -3285,6 +3563,45 @@ function TextField({
   );
 }
 
+function ProfileSection({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="card p-5">
+      <h2 className="text-base font-bold tracking-[-0.01em]">{title}</h2>
+      <div className="mt-4 space-y-4">{children}</div>
+    </section>
+  );
+}
+
+function ProfileTextarea({
+  label,
+  value,
+  onChange,
+  rows = 5,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  rows?: number;
+}) {
+  return (
+    <label className="block">
+      <span className="text-xs font-bold text-slate-600">{label}</span>
+      <textarea
+        className="mt-1 w-full rounded-lg border border-slate-200 p-3 text-sm leading-6 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+        rows={rows}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </label>
+  );
+}
+
 function NoticeBanner({
   notice,
   onDismiss,
@@ -3694,6 +4011,58 @@ function manualJobPayload(form: ManualJobFormState): ManualJobPostingPayload {
     employment_type: form.employment_type.trim(),
     remote_type: form.remote_type.trim(),
   };
+}
+
+function profileToForm(profile: CandidateProfileDto): CandidateProfileFormState {
+  return {
+    full_name: profile.full_name ?? "",
+    email: profile.email ?? "",
+    location: profile.location ?? "",
+    target_roles: joinList(profile.target_roles),
+    preferred_locations: joinList(profile.preferred_locations),
+    remote_preference: profile.remote_preference ?? "",
+    salary_expectation: profile.salary_expectation ?? "",
+    availability: profile.availability ?? "",
+    skills: joinList(profile.skills),
+    tech_stack: joinList(profile.tech_stack),
+    projects: joinList(profile.projects),
+    experience_summary: profile.experience_summary ?? "",
+    education_summary: profile.education_summary ?? "",
+    strengths: joinList(profile.strengths),
+    no_gos: joinList(profile.no_gos),
+    application_tone: profile.application_tone ?? "",
+    extra_context: profile.extra_context ?? "",
+  };
+}
+
+function profilePayload(form: CandidateProfileFormState): CandidateProfilePayload {
+  return {
+    full_name: form.full_name.trim(),
+    email: form.email.trim(),
+    location: form.location.trim(),
+    target_roles: splitCsv(form.target_roles),
+    preferred_locations: splitCsv(form.preferred_locations),
+    remote_preference: form.remote_preference.trim(),
+    salary_expectation: form.salary_expectation.trim(),
+    availability: form.availability.trim(),
+    skills: splitCsv(form.skills),
+    tech_stack: splitCsv(form.tech_stack),
+    projects: splitCsv(form.projects),
+    experience_summary: form.experience_summary.trim(),
+    education_summary: form.education_summary.trim(),
+    strengths: splitCsv(form.strengths),
+    no_gos: splitCsv(form.no_gos),
+    application_tone: form.application_tone.trim(),
+    extra_context: form.extra_context.trim(),
+  };
+}
+
+function joinList(value: unknown) {
+  return Array.isArray(value)
+    ? value
+        .map((item) => (typeof item === "string" ? item : JSON.stringify(item)))
+        .join(", ")
+    : "";
 }
 
 function readableError(error: unknown) {

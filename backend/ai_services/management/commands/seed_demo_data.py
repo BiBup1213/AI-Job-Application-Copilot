@@ -3,6 +3,7 @@ from datetime import timedelta
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
+from ai_services.models import CandidateProfile
 from ai_services.services import APPLICATION_ANGLE, classify_email_message
 from applications.models import Application, ApplicationDocument, StatusEvent
 from campaigns.models import SearchCampaign
@@ -15,6 +16,53 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         now = timezone.now()
+
+        CandidateProfile.objects.update_or_create(
+            id=1,
+            defaults={
+                "full_name": "Max Beispiel",
+                "email": "max.beispiel@gmail.com",
+                "location": "Braunschweig",
+                "target_roles": [
+                    "Junior Softwareentwickler",
+                    "Python Developer",
+                    "Web Developer",
+                    "Automation Specialist",
+                ],
+                "preferred_locations": ["Braunschweig", "Hannover", "Remote"],
+                "remote_preference": "Remote oder Hybrid bevorzugt",
+                "salary_expectation": "",
+                "availability": "Kurzfristig nach Absprache",
+                "skills": [
+                    "Python",
+                    "Django",
+                    "JavaScript",
+                    "REST APIs",
+                    "SQL",
+                    "Automatisierung",
+                    "E-Commerce-Prozesse",
+                ],
+                "tech_stack": ["Python", "Django", "React Grundlagen", "Docker", "Git"],
+                "projects": [
+                    "Webentwicklung und API-Integrationen",
+                    "Automatisierung wiederkehrender Abläufe",
+                    "E-Commerce-Prozessverbesserungen",
+                ],
+                "experience_summary": (
+                    "Praktisch geprägter Entwickler mit Fokus auf Webentwicklung, "
+                    "Automatisierung und schneller Einarbeitung in produktnahe Abläufe."
+                ),
+                "education_summary": "",
+                "strengths": [
+                    "pragmatische Umsetzung",
+                    "schnelle Einarbeitung",
+                    "klarer Blick für Prozesse",
+                ],
+                "no_gos": ["reine Senior-Rollen", "starker Sales-Fokus"],
+                "application_tone": "professionell, konkret und nicht übertrieben",
+                "extra_context": "Bewerbungen sollen auf Deutsch und mit Human-in-the-loop Prüfung entstehen.",
+            },
+        )
 
         campaigns = [
             {
@@ -185,7 +233,7 @@ class Command(BaseCommand):
                         "Sehr geehrtes Recruiting-Team,\n\n"
                         "anbei erhalten Sie meine Bewerbung. Der Entwurf ist bewusst "
                         "als prüfbarer MVP-Text angelegt.\n\n"
-                        "Mit freundlichen Grüßen\nBob"
+                        "Mit freundlichen Grüßen\nMax Beispiel"
                     ),
                     "is_approved": application.status == Application.Status.DRAFT_APPROVED,
                 },

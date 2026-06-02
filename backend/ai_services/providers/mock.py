@@ -1,3 +1,4 @@
+from ai_services.profile_payload import candidate_display_name, get_candidate_profile_payload
 from applications.models import ApplicationDocument
 from jobs.models import JobMatch
 from mailcenter.models import EmailMessage
@@ -45,6 +46,7 @@ class MockAIProvider:
     def generate_application_documents(self, application):
         job = application.job
         match = getattr(job, "match", None) or self.evaluate_job_match(job)
+        display_name = candidate_display_name()
         next_cover_version = self._next_document_version(
             application, ApplicationDocument.DocumentType.COVER_LETTER
         )
@@ -67,7 +69,7 @@ class MockAIProvider:
                 "verlässliche Abläufe und meine Bereitschaft, Verantwortung für konkrete "
                 "Umsetzungsschritte zu übernehmen.\n\n"
                 "Mit freundlichen Grüßen\n"
-                "Bob"
+                f"{display_name}"
             ),
         )
         email = ApplicationDocument.objects.create(
@@ -83,13 +85,14 @@ class MockAIProvider:
                 "Gerne erläutere ich meine Motivation und relevante Projekte in einem "
                 "persönlichen Gespräch.\n\n"
                 "Mit freundlichen Grüßen\n"
-                "Bob"
+                f"{display_name}"
             ),
         )
         return [cover_letter, email]
 
     def generate_follow_up_document(self, application):
         job = application.job
+        display_name = candidate_display_name()
         next_version = self._next_document_version(
             application, ApplicationDocument.DocumentType.FOLLOW_UP
         )
@@ -106,7 +109,7 @@ class MockAIProvider:
                 "Falls es bereits einen Zwischenstand gibt oder noch Unterlagen fehlen, "
                 "freue ich mich über eine kurze Rückmeldung.\n\n"
                 "Vielen Dank und freundliche Grüße\n"
-                "Bob"
+                f"{display_name}"
             ),
         )
         return document
@@ -141,6 +144,7 @@ class MockAIProvider:
         return JobMatch.Category.X
 
     def _score_for_job(self, job):
+        profile = get_candidate_profile_payload()
         known_scores = {
             "TRIOLOGY GmbH": 91,
             "KOSATEC Computer GmbH": 88,
@@ -156,6 +160,9 @@ class MockAIProvider:
                 job.description,
                 " ".join(job.tags or []),
                 " ".join(job.requirements or []),
+                " ".join(str(item) for item in profile.get("skills", [])),
+                " ".join(str(item) for item in profile.get("tech_stack", [])),
+                profile.get("experience_summary", ""),
             ]
         ).lower()
         score = 66
@@ -174,6 +181,9 @@ class MockAIProvider:
         for keyword, weight in weights.items():
             if keyword in text:
                 score += weight
+        for no_go in profile.get("no_gos", []):
+            if isinstance(no_go, str) and no_go.strip().lower() in text:
+                score -= 8
         if job.remote_type in ["remote", "hybrid"]:
             score += 3
         return max(0, min(100, score))

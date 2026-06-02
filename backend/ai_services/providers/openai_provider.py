@@ -2,6 +2,7 @@ import json
 import logging
 
 from applications.models import ApplicationDocument
+from ai_services.profile_payload import get_candidate_profile_payload
 from jobs.models import JobMatch
 from mailcenter.models import EmailMessage
 
@@ -10,25 +11,6 @@ from .mock import MockAIProvider
 
 logger = logging.getLogger(__name__)
 
-
-CANDIDATE_PROFILE = {
-    "level": "junior/practical developer",
-    "skills": [
-        "Python",
-        "Django",
-        "JavaScript",
-        "React basics",
-        "REST APIs",
-        "SQL",
-        "Docker/Git basics",
-    ],
-    "background": [
-        "E-Commerce background",
-        "automation interest",
-        "AI/tooling interest",
-        "German-language applications",
-    ],
-}
 
 JOB_MATCH_SCHEMA = {
     "type": "object",
@@ -236,7 +218,7 @@ class OpenAIProvider:
                     "role": "user",
                     "content": json.dumps(
                         {
-                            "candidate_profile": CANDIDATE_PROFILE,
+                            "candidate_profile": self._candidate_profile_payload(),
                             "job": self._job_payload(job),
                             "category_rules": {
                                 "A": "sehr passend, hohe Priorität",
@@ -274,7 +256,7 @@ class OpenAIProvider:
                     "role": "user",
                     "content": json.dumps(
                         {
-                            "candidate_profile": CANDIDATE_PROFILE,
+                            "candidate_profile": self._candidate_profile_payload(),
                             "job": self._job_payload(job),
                             "match": self._match_payload(match),
                             "requested_documents": ["cover_letter", "email"],
@@ -306,7 +288,7 @@ class OpenAIProvider:
                     "role": "user",
                     "content": json.dumps(
                         {
-                            "candidate_profile": CANDIDATE_PROFILE,
+                            "candidate_profile": self._candidate_profile_payload(),
                             "job": self._job_payload(job),
                             "application": {
                                 "status": application.status,
@@ -363,6 +345,9 @@ class OpenAIProvider:
             ],
         )
         return self._validate_email_classification_payload(json.loads(content))
+
+    def _candidate_profile_payload(self):
+        return get_candidate_profile_payload()
 
     def _create_structured_json(self, schema_name, schema, messages):
         completion = self._get_client().chat.completions.create(
