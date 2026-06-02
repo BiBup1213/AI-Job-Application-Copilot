@@ -75,6 +75,7 @@ The sidebar uses React Router routes for Übersicht, Suchkampagnen, Gefundene Jo
 - `Mail-Zentrale` page with mock sync, reclassification, application linking, and explicit status-update suggestions.
 - `Follow-ups` page with due/planned follow-ups, German follow-up drafts, and explicit review/approval.
 - `Profil` page with an editable candidate profile used for future job matching and newly generated application documents.
+- Candidate document upload for CVs, certificates, references, templates, and other application material with local text extraction where possible.
 
 ## Not Implemented Yet
 
@@ -124,6 +125,11 @@ The frontend uses these API calls:
 - `GET /api/mail/messages/`
 - `GET /api/profile/`
 - `PATCH /api/profile/`
+- `GET /api/profile/documents/`
+- `POST /api/profile/documents/`
+- `GET /api/profile/documents/{id}/`
+- `PATCH /api/profile/documents/{id}/`
+- `DELETE /api/profile/documents/{id}/`
 - `POST /api/jobs/{id}/create-application/`
 - `POST /api/applications/{id}/generate-documents/`
 - `POST /api/applications/{id}/generate-follow-up/`
@@ -143,6 +149,11 @@ The frontend uses these API calls:
 GET  /api/dashboard/summary/
 GET  /api/profile/
 PATCH /api/profile/
+GET  /api/profile/documents/
+POST /api/profile/documents/
+GET  /api/profile/documents/{id}/
+PATCH /api/profile/documents/{id}/
+DELETE /api/profile/documents/{id}/
 
 GET  /api/campaigns/
 POST /api/campaigns/
@@ -177,12 +188,28 @@ POST /api/mail/messages/{id}/classify/
 - Campaign runs create realistic mock job postings.
 - Job evaluation creates deterministic `JobMatch` entries.
 - Application document generation creates German cover letter and email drafts.
-- Candidate profile data from `/api/profile/` is used for new matching and newly generated documents; existing generated documents are not regenerated automatically.
+- Candidate profile data from `/api/profile/` and confirmed extracted text from `/api/profile/documents/` are used for new matching and newly generated documents; existing generated documents are not regenerated automatically.
+- Uploaded profile documents are stored locally under `backend/media/`, which is ignored by git.
 - AI-like behavior is routed through `backend/ai_services/providers/mock.py`.
 - `backend/ai_services/providers/openai_provider.py` can use OpenAI for job matching, application documents, follow-up drafts, and email classification when explicitly configured.
 - Gmail draft creation is simulated only.
 - Mail sync is mock-based. Email classification is mock-based by default and can use OpenAI when explicitly configured.
 - No real job board scraping, Gmail API, email sending, or secrets are used.
+
+## Candidate Document Uploads
+
+The `Profil` page supports uploading PDF, DOCX, and TXT files up to 10 MB.
+Text extraction is local and best-effort:
+
+- TXT files are read directly.
+- PDF extraction uses `pypdf` and works only for PDFs with embedded text.
+- DOCX extraction uses `python-docx`.
+- OCR is not implemented.
+
+Users can view and edit extracted text, then decide whether a document should be
+used as AI profile context. Only extracted text from documents with `Für
+KI-Kontext verwenden` enabled is included in AI provider payloads. Uploaded files
+themselves are never sent to OpenAI.
 
 ## Testing OpenAI Provider
 
@@ -217,10 +244,11 @@ OpenAI usage is optional and disabled by default.
    client.
 
 Job matching, application document generation, and follow-up drafting send the
-stored candidate profile plus job or application context to OpenAI only when
-`AI_PROVIDER=openai`. Email classification sends only sender, subject, and body
-in that same mode. Generated responses are validated as structured JSON and fall
-back to the mock provider on errors.
+stored candidate profile, selected extracted document text, and job or
+application context to OpenAI only when `AI_PROVIDER=openai`. Email
+classification sends only sender, subject, and body in that same mode. Generated
+responses are validated as structured JSON and fall back to the mock provider on
+errors.
 
 ## Demo Data
 

@@ -62,8 +62,14 @@ import {
   type EmailMessageDto,
 } from "./api/mail";
 import {
+  deleteCandidateDocument,
+  getCandidateDocuments,
   getCandidateProfile,
   updateCandidateProfile,
+  updateCandidateDocument,
+  uploadCandidateDocument,
+  type CandidateDocumentDto,
+  type CandidateDocumentType,
   type CandidateProfileDto,
   type CandidateProfilePayload,
 } from "./api/profile";
@@ -159,6 +165,12 @@ type CandidateProfileFormState = {
   no_gos: string;
   application_tone: string;
   extra_context: string;
+};
+
+type CandidateDocumentFormState = {
+  document_type: CandidateDocumentType;
+  title: string;
+  file: File | null;
 };
 
 type DisplayCampaign = {
@@ -289,6 +301,23 @@ const defaultProfileForm: CandidateProfileFormState = {
   application_tone: "",
   extra_context: "",
 };
+
+const defaultCandidateDocumentForm: CandidateDocumentFormState = {
+  document_type: "cv",
+  title: "",
+  file: null,
+};
+
+const candidateDocumentTypes: Array<{
+  value: CandidateDocumentType;
+  label: string;
+}> = [
+  { value: "cv", label: "Lebenslauf" },
+  { value: "certificate", label: "Zertifikat" },
+  { value: "reference", label: "Referenz" },
+  { value: "cover_letter_template", label: "Anschreiben-Vorlage" },
+  { value: "other", label: "Sonstiges" },
+];
 
 const applicationFilters: Array<{
   key: ApplicationFilterKey;
@@ -796,10 +825,19 @@ function PlaceholderPage({ title }: { title: string }) {
 
 function ProfilePage() {
   const [profile, setProfile] = useState<CandidateProfileDto | null>(null);
+  const [documents, setDocuments] = useState<CandidateDocumentDto[]>([]);
   const [form, setForm] = useState<CandidateProfileFormState>(defaultProfileForm);
+  const [documentForm, setDocumentForm] = useState<CandidateDocumentFormState>(
+    defaultCandidateDocumentForm,
+  );
   const [savedForm, setSavedForm] = useState<CandidateProfileFormState>(defaultProfileForm);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadInputKey, setUploadInputKey] = useState(0);
+  const [busyDocumentId, setBusyDocumentId] = useState<number | null>(null);
+  const [selectedDocument, setSelectedDocument] = useState<CandidateDocumentDto | null>(null);
+  const [documentTextMode, setDocumentTextMode] = useState<"view" | "edit">("view");
   const [notice, setNotice] = useState<Notice | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -807,9 +845,13 @@ function ProfilePage() {
     setLoading(true);
     setLoadError(null);
     try {
-      const data = await getCandidateProfile();
+      const [data, documentData] = await Promise.all([
+        getCandidateProfile(),
+        getCandidateDocuments(),
+      ]);
       const nextForm = profileToForm(data);
       setProfile(data);
+      setDocuments(documentData);
       setForm(nextForm);
       setSavedForm(nextForm);
     } catch (error) {
@@ -837,6 +879,91 @@ function ProfilePage() {
       setNotice({ type: "error", text: readableError(error) });
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleUploadDocument(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setNotice(null);
+    if (!documentForm.file) {
+      setNotice({ type: "error", text: "Bitte wähle eine Datei aus." });
+      return;
+    }
+    if (!isAllowedProfileDocument(documentForm.file)) {
+      setNotice({
+        type: "error",
+        text: "Unterstützt werden nur PDF-, DOCX- und TXT-Dateien bis 10 MB.",
+      });
+      return;
+    }
+    setUploading(true);
+    try {
+      await uploadCandidateDocument({
+        document_type: documentForm.document_type,
+        title: documentForm.title.trim() || documentForm.file.name,
+        file: documentForm.file,
+      });
+      setDocumentForm(defaultCandidateDocumentForm);
+      setUploadInputKey((current) => current + 1);
+      setDocuments(await getCandidateDocuments());
+      setNotice({ type: "success", text: "Unterlage wurde hochgeladen." });
+    } catch (error) {
+      setNotice({ type: "error", text: readableError(error) });
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function handleToggleDocumentContext(document: CandidateDocumentDto) {
+    setNotice(null);
+    setBusyDocumentId(document.id);
+    try {
+      const updatedDocument = await updateCandidateDocument(document.id, {
+        use_for_ai_context: !document.use_for_ai_context,
+      });
+      setDocuments((current) =>
+        current.map((item) => (item.id === updatedDocument.id ? updatedDocument : item)),
+      );
+    } catch (error) {
+      setNotice({ type: "error", text: readableError(error) });
+    } finally {
+      setBusyDocumentId(null);
+    }
+  }
+
+  async function handleDeleteDocument(document: CandidateDocumentDto) {
+    if (!window.confirm("Unterlage wirklich löschen?")) return;
+    setNotice(null);
+    setBusyDocumentId(document.id);
+    try {
+      await deleteCandidateDocument(document.id);
+      setDocuments((current) => current.filter((item) => item.id !== document.id));
+      setNotice({ type: "success", text: "Unterlage wurde gelöscht." });
+    } catch (error) {
+      setNotice({ type: "error", text: readableError(error) });
+    } finally {
+      setBusyDocumentId(null);
+    }
+  }
+
+  async function handleSaveDocumentText(
+    document: CandidateDocumentDto,
+    payload: Pick<CandidateDocumentDto, "title" | "extracted_text" | "notes">,
+  ) {
+    setNotice(null);
+    setBusyDocumentId(document.id);
+    try {
+      const updatedDocument = await updateCandidateDocument(document.id, payload);
+      setDocuments((current) =>
+        current.map((item) => (item.id === updatedDocument.id ? updatedDocument : item)),
+      );
+      setSelectedDocument(updatedDocument);
+      setDocumentTextMode("view");
+      setNotice({ type: "success", text: "Extrahierter Text wurde gespeichert." });
+    } catch (error) {
+      setNotice({ type: "error", text: readableError(error) });
+    } finally {
+      setBusyDocumentId(null);
     }
   }
 
@@ -992,6 +1119,99 @@ function ProfilePage() {
             </ProfileSection>
           </section>
 
+          <section className="card mt-4 p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-base font-bold tracking-[-0.01em]">
+                  Bewerbungsunterlagen
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  Lade Lebenslauf, Zertifikate oder Referenzen hoch. Nur bestätigter extrahierter Text wird für den KI-Kontext genutzt.
+                </p>
+              </div>
+              <StatusBadge
+                label={`${documents.filter((document) => document.use_for_ai_context).length} für KI-Kontext`}
+                tone="blue"
+              />
+            </div>
+            <form
+              className="mt-5 grid grid-cols-[180px_1fr_1.2fr_auto] items-end gap-3 rounded-xl border border-slate-100 bg-slate-50 p-4"
+              onSubmit={handleUploadDocument}
+            >
+              <label className="block">
+                <span className="text-xs font-bold text-slate-600">Dokumenttyp</span>
+                <select
+                  className="mt-1 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                  value={documentForm.document_type}
+                  onChange={(event) =>
+                    setDocumentForm({
+                      ...documentForm,
+                      document_type: event.target.value as CandidateDocumentType,
+                    })
+                  }
+                >
+                  {candidateDocumentTypes.map((type) => (
+                    <option key={type.value} value={type.value}>
+                      {type.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <TextField
+                label="Titel"
+                value={documentForm.title}
+                onChange={(value) => setDocumentForm({ ...documentForm, title: value })}
+              />
+              <label className="block">
+                <span className="text-xs font-bold text-slate-600">Datei</span>
+                <input
+                  key={uploadInputKey}
+                  className="mt-1 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none file:mr-3 file:rounded-md file:border-0 file:bg-blue-50 file:px-3 file:py-1 file:text-sm file:font-semibold file:text-blue-700"
+                  type="file"
+                  accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
+                  onChange={(event) =>
+                    setDocumentForm({
+                      ...documentForm,
+                      file: event.target.files?.[0] ?? null,
+                    })
+                  }
+                />
+              </label>
+              <button
+                className="inline-flex h-10 items-center gap-2 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-70"
+                disabled={uploading}
+              >
+                {uploading ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+                Unterlage hochladen
+              </button>
+            </form>
+            <div className="mt-4 space-y-3">
+              {documents.length ? (
+                documents.map((document) => (
+                  <CandidateDocumentCard
+                    key={document.id}
+                    document={document}
+                    busy={busyDocumentId === document.id}
+                    onView={() => {
+                      setSelectedDocument(document);
+                      setDocumentTextMode("view");
+                    }}
+                    onEdit={() => {
+                      setSelectedDocument(document);
+                      setDocumentTextMode("edit");
+                    }}
+                    onToggleContext={() => handleToggleDocumentContext(document)}
+                    onDelete={() => handleDeleteDocument(document)}
+                  />
+                ))
+              ) : (
+                <div className="rounded-xl border border-dashed border-slate-200 p-6">
+                  <EmptyState text="Noch keine Unterlagen hochgeladen." />
+                </div>
+              )}
+            </div>
+          </section>
+
           <section className="sticky bottom-0 mt-5 rounded-xl border border-slate-200 bg-white/95 px-5 py-4 shadow-[0_-12px_32px_rgba(15,23,42,0.08)] backdrop-blur">
             <div className="flex items-center justify-between gap-4">
               <div className="text-sm font-medium text-slate-500">
@@ -1020,6 +1240,16 @@ function ProfilePage() {
               </div>
             </div>
           </section>
+          {selectedDocument ? (
+            <CandidateDocumentTextModal
+              document={selectedDocument}
+              mode={documentTextMode}
+              saving={busyDocumentId === selectedDocument.id}
+              onClose={() => setSelectedDocument(null)}
+              onEdit={() => setDocumentTextMode("edit")}
+              onSave={handleSaveDocumentText}
+            />
+          ) : null}
         </>
       )}
     </div>
@@ -3602,6 +3832,204 @@ function ProfileTextarea({
   );
 }
 
+function CandidateDocumentCard({
+  document,
+  busy,
+  onView,
+  onEdit,
+  onToggleContext,
+  onDelete,
+}: {
+  document: CandidateDocumentDto;
+  busy: boolean;
+  onView: () => void;
+  onEdit: () => void;
+  onToggleContext: () => void;
+  onDelete: () => void;
+}) {
+  const statusTone = extractionStatusTone(document.extraction_status);
+  return (
+    <article className="rounded-xl border border-slate-200 bg-white p-4">
+      <div className="grid grid-cols-[1fr_auto] items-start gap-4">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="truncate text-sm font-bold text-slate-900">{document.title}</h3>
+            <StatusBadge
+              label={documentTypeLabel(document.document_type)}
+              tone="gray"
+            />
+            <StatusBadge
+              label={extractionStatusLabel(document.extraction_status)}
+              tone={statusTone}
+            />
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs font-medium text-slate-500">
+            <span>{document.original_filename}</span>
+            <span>·</span>
+            <span>{formatFileSize(document.file_size)}</span>
+            <span>·</span>
+            <span>Aktualisiert {relativeDate(document.updated_at)}</span>
+          </div>
+        </div>
+        <label
+          className={cn(
+            "flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold",
+            document.use_for_ai_context
+              ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+              : "border-slate-200 bg-slate-50 text-slate-600",
+          )}
+        >
+          <input
+            type="checkbox"
+            checked={document.use_for_ai_context}
+            disabled={busy}
+            onChange={onToggleContext}
+          />
+          Für KI-Kontext verwenden
+        </label>
+      </div>
+      <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-100 pt-4">
+        <button
+          className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 hover:bg-slate-50"
+          onClick={onView}
+        >
+          <FileText size={15} />
+          Text ansehen
+        </button>
+        <button
+          className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-blue-700 hover:bg-blue-50"
+          onClick={onEdit}
+        >
+          <PenLine size={15} />
+          Text bearbeiten
+        </button>
+        <button
+          className="inline-flex h-9 items-center gap-2 rounded-lg border border-rose-200 bg-white px-3 text-sm font-semibold text-rose-700 hover:bg-rose-50 disabled:opacity-60"
+          disabled={busy}
+          onClick={onDelete}
+        >
+          <X size={15} />
+          Löschen
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function CandidateDocumentTextModal({
+  document,
+  mode,
+  saving,
+  onClose,
+  onEdit,
+  onSave,
+}: {
+  document: CandidateDocumentDto;
+  mode: "view" | "edit";
+  saving: boolean;
+  onClose: () => void;
+  onEdit: () => void;
+  onSave: (
+    document: CandidateDocumentDto,
+    payload: Pick<CandidateDocumentDto, "title" | "extracted_text" | "notes">,
+  ) => void;
+}) {
+  const [title, setTitle] = useState(document.title);
+  const [text, setText] = useState(document.extracted_text);
+  const [notes, setNotes] = useState(document.notes);
+  const editable = mode === "edit";
+
+  useEffect(() => {
+    setTitle(document.title);
+    setText(document.extracted_text);
+    setNotes(document.notes);
+  }, [document]);
+
+  return (
+    <div className="fixed inset-0 z-20 flex items-center justify-center bg-slate-950/35 px-4 py-8">
+      <div className="max-h-[92vh] w-full max-w-4xl overflow-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-xl font-bold tracking-[-0.02em]">
+              Extrahierter Text
+            </h2>
+            <p className="mt-1 text-sm text-slate-500">
+              {document.original_filename} · {extractionStatusLabel(document.extraction_status)}
+            </p>
+          </div>
+          <button
+            type="button"
+            className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"
+            onClick={onClose}
+          >
+            <X size={20} />
+          </button>
+        </div>
+        <label className="mt-6 block">
+          <span className="text-xs font-bold text-slate-600">Titel</span>
+          <input
+            className="mt-1 h-10 w-full rounded-lg border border-slate-200 px-3 text-sm font-semibold outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-50"
+            value={title}
+            disabled={!editable}
+            onChange={(event) => setTitle(event.target.value)}
+          />
+        </label>
+        <label className="mt-4 block">
+          <span className="text-xs font-bold text-slate-600">Extrahierter Text</span>
+          <textarea
+            className="mt-1 min-h-[360px] w-full rounded-lg border border-slate-200 p-4 text-sm leading-6 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-50"
+            value={text}
+            disabled={!editable}
+            placeholder="Für diese Datei konnte kein Text extrahiert werden. Du kannst den Text manuell einfügen."
+            onChange={(event) => setText(event.target.value)}
+          />
+        </label>
+        <label className="mt-4 block">
+          <span className="text-xs font-bold text-slate-600">Notizen</span>
+          <textarea
+            className="mt-1 min-h-[96px] w-full rounded-lg border border-slate-200 p-3 text-sm leading-6 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-50"
+            value={notes}
+            disabled={!editable}
+            onChange={(event) => setNotes(event.target.value)}
+          />
+        </label>
+        <div className="mt-5 flex justify-end gap-3">
+          <button
+            className="h-10 rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-800 hover:bg-slate-50"
+            onClick={onClose}
+          >
+            Schließen
+          </button>
+          {!editable ? (
+            <button
+              className="inline-flex h-10 items-center gap-2 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white hover:bg-blue-700"
+              onClick={onEdit}
+            >
+              <PenLine size={16} />
+              Text bearbeiten
+            </button>
+          ) : (
+            <button
+              className="inline-flex h-10 items-center gap-2 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-70"
+              disabled={saving}
+              onClick={() =>
+                onSave(document, {
+                  title: title.trim() || document.title,
+                  extracted_text: text,
+                  notes,
+                })
+              }
+            >
+              {saving ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
+              Speichern
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function NoticeBanner({
   notice,
   onDismiss,
@@ -4063,6 +4491,42 @@ function joinList(value: unknown) {
         .map((item) => (typeof item === "string" ? item : JSON.stringify(item)))
         .join(", ")
     : "";
+}
+
+function isAllowedProfileDocument(file: File) {
+  const lowerName = file.name.toLowerCase();
+  const allowedExtension =
+    lowerName.endsWith(".pdf") || lowerName.endsWith(".docx") || lowerName.endsWith(".txt");
+  return allowedExtension && file.size <= 10 * 1024 * 1024;
+}
+
+function documentTypeLabel(type: CandidateDocumentType) {
+  return candidateDocumentTypes.find((item) => item.value === type)?.label ?? "Sonstiges";
+}
+
+function extractionStatusLabel(status: CandidateDocumentDto["extraction_status"]) {
+  const labels: Record<CandidateDocumentDto["extraction_status"], string> = {
+    pending: "Extraktion läuft",
+    success: "Text extrahiert",
+    failed: "Extraktion fehlgeschlagen",
+    unsupported: "Nicht unterstützt",
+  };
+  return labels[status];
+}
+
+function extractionStatusTone(
+  status: CandidateDocumentDto["extraction_status"],
+): StatusTone {
+  if (status === "success") return "green";
+  if (status === "pending") return "blue";
+  if (status === "unsupported") return "orange";
+  return "red";
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function readableError(error: unknown) {
