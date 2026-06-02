@@ -40,8 +40,9 @@ OPENAI_MODEL=
 ```
 
 The deterministic mock provider is the default. With `AI_PROVIDER=openai`,
-job matching can call OpenAI when `OPENAI_API_KEY` and `OPENAI_MODEL` are set.
-Document generation and email classification still delegate to mock behavior.
+job matching, application document generation, and follow-up drafting can call
+OpenAI when `OPENAI_API_KEY` and `OPENAI_MODEL` are set. Email classification
+can also call OpenAI and falls back to mock behavior on errors.
 If OpenAI configuration is missing, parsing/validation fails, or the provider
 errors, the backend logs a warning and falls back to mock. API keys are not logged.
 
@@ -78,7 +79,6 @@ The sidebar uses React Router routes for Übersicht, Suchkampagnen, Gefundene Jo
 
 - No real Gmail API integration.
 - No real job board scraping.
-- No real AI/LLM document generation, follow-up drafting, or mail classification.
 - No real email sending.
 - No authentication or multi-user profile management.
 
@@ -173,14 +173,14 @@ POST /api/mail/messages/{id}/classify/
 - Job evaluation creates deterministic `JobMatch` entries.
 - Application document generation creates German cover letter and email drafts.
 - AI-like behavior is routed through `backend/ai_services/providers/mock.py`.
-- `backend/ai_services/providers/openai_provider.py` can use OpenAI for job matching only when explicitly configured.
+- `backend/ai_services/providers/openai_provider.py` can use OpenAI for job matching, application documents, follow-up drafts, and email classification when explicitly configured.
 - Gmail draft creation is simulated only.
-- Mail sync and classification are mock-based.
+- Mail sync is mock-based. Email classification is mock-based by default and can use OpenAI when explicitly configured.
 - No real job board scraping, Gmail API, email sending, or secrets are used.
 
-## Testing OpenAI Job Matching
+## Testing OpenAI Provider
 
-OpenAI matching is optional and disabled by default.
+OpenAI usage is optional and disabled by default.
 
 1. Install backend requirements after pulling changes:
 
@@ -198,16 +198,23 @@ OpenAI matching is optional and disabled by default.
    OPENAI_MODEL=gpt-4o-mini
    ```
 
-3. Start the backend and evaluate a job:
+3. Start the backend and evaluate a job, generate documents, or classify mail:
 
    ```bash
    python manage.py runserver
    ```
 
-   Then call `POST /api/jobs/{id}/evaluate/` from the frontend flow or an API client.
+   Then call `POST /api/jobs/{id}/evaluate/`,
+   `POST /api/applications/{id}/generate-documents/`, or
+   `POST /api/applications/{id}/generate-follow-up/`, or
+   `POST /api/mail/messages/{id}/classify/` from the frontend flow or an API
+   client.
 
-Only job matching sends job data to OpenAI, and only when `AI_PROVIDER=openai`.
-Document generation, follow-up drafting, and mail classification remain mock-based.
+Job matching, application document generation, and follow-up drafting send job
+or application context to OpenAI only when `AI_PROVIDER=openai`. Email
+classification sends only sender, subject, and body in that same mode. Generated
+responses are validated as structured JSON and fall back to the mock provider on
+errors.
 
 ## Demo Data
 
