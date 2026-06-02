@@ -76,6 +76,7 @@ The sidebar uses React Router routes for Übersicht, Suchkampagnen, Gefundene Jo
 - `Follow-ups` page with due/planned follow-ups, German follow-up drafts, and explicit review/approval.
 - `Profil` page with an editable candidate profile used for future job matching and newly generated application documents.
 - Candidate document upload for CVs, certificates, references, templates, and other application material with local text extraction where possible.
+- AI-assisted profile suggestions from uploaded documents with explicit review and safe apply behavior.
 
 ## Not Implemented Yet
 
@@ -130,6 +131,11 @@ The frontend uses these API calls:
 - `GET /api/profile/documents/{id}/`
 - `PATCH /api/profile/documents/{id}/`
 - `DELETE /api/profile/documents/{id}/`
+- `POST /api/profile/suggest-from-documents/`
+- `GET /api/profile/suggestions/`
+- `GET /api/profile/suggestions/{id}/`
+- `POST /api/profile/suggestions/{id}/apply/`
+- `POST /api/profile/suggestions/{id}/dismiss/`
 - `POST /api/jobs/{id}/create-application/`
 - `POST /api/applications/{id}/generate-documents/`
 - `POST /api/applications/{id}/generate-follow-up/`
@@ -154,6 +160,11 @@ POST /api/profile/documents/
 GET  /api/profile/documents/{id}/
 PATCH /api/profile/documents/{id}/
 DELETE /api/profile/documents/{id}/
+POST /api/profile/suggest-from-documents/
+GET  /api/profile/suggestions/
+GET  /api/profile/suggestions/{id}/
+POST /api/profile/suggestions/{id}/apply/
+POST /api/profile/suggestions/{id}/dismiss/
 
 GET  /api/campaigns/
 POST /api/campaigns/
@@ -188,7 +199,7 @@ POST /api/mail/messages/{id}/classify/
 - Campaign runs create realistic mock job postings.
 - Job evaluation creates deterministic `JobMatch` entries.
 - Application document generation creates German cover letter and email drafts.
-- Candidate profile data from `/api/profile/` and confirmed extracted text from `/api/profile/documents/` are used for new matching and newly generated documents; existing generated documents are not regenerated automatically.
+- Candidate profile data from `/api/profile/` and applied document-derived profile suggestions are used for new matching and newly generated documents; existing generated documents are not regenerated automatically.
 - Uploaded profile documents are stored locally under `backend/media/`, which is ignored by git.
 - AI-like behavior is routed through `backend/ai_services/providers/mock.py`.
 - `backend/ai_services/providers/openai_provider.py` can use OpenAI for job matching, application documents, follow-up drafts, and email classification when explicitly configured.
@@ -199,17 +210,32 @@ POST /api/mail/messages/{id}/classify/
 ## Candidate Document Uploads
 
 The `Profil` page supports uploading PDF, DOCX, and TXT files up to 10 MB.
-Text extraction is local and best-effort:
+The main workflow is structured profile analysis, not manual copying of raw
+extracted text:
+
+```text
+Unterlagen hochladen -> Profil aus Unterlagen analysieren -> Vorschläge prüfen/übernehmen -> Profil ergänzen
+```
+
+Text extraction remains a local best-effort helper for analysis:
 
 - TXT files are read directly.
 - PDF extraction uses `pypdf` and works only for PDFs with embedded text.
 - DOCX extraction uses `python-docx`.
 - OCR is not implemented.
 
-Users can view and edit extracted text, then decide whether a document should be
-used as AI profile context. Only extracted text from documents with `Für
-KI-Kontext verwenden` enabled is included in AI provider payloads. Uploaded files
-themselves are never sent to OpenAI.
+Users can choose which documents are preferred for AI context. Profile
+suggestions use the best available document information: extracted text when
+available, plus metadata such as title, document type, original filename, notes,
+and extraction diagnostics. Extraction failure does not block profile analysis.
+Uploaded files themselves are never sent to OpenAI.
+
+`POST /api/profile/suggest-from-documents/` creates structured suggestions from
+selected or AI-context-enabled documents. Suggestions do not overwrite the
+profile automatically. The user must apply them explicitly; the backend then
+fills empty scalar fields, merges list fields, and appends summary/context text
+only when it is not already present. OCR and Vision-based document understanding
+are not implemented yet.
 
 ## Testing OpenAI Provider
 
@@ -243,12 +269,22 @@ OpenAI usage is optional and disabled by default.
    `POST /api/mail/messages/{id}/classify/` from the frontend flow or an API
    client.
 
-Job matching, application document generation, and follow-up drafting send the
-stored candidate profile, selected extracted document text, and job or
-application context to OpenAI only when `AI_PROVIDER=openai`. Email
+Job matching, application document generation, follow-up drafting, and profile
+suggestions send the stored candidate profile, selected extracted document text,
+and job or application context to OpenAI only when `AI_PROVIDER=openai`. Email
 classification sends only sender, subject, and body in that same mode. Generated
 responses are validated as structured JSON and fall back to the mock provider on
 errors.
+
+Troubleshooting profile suggestions:
+
+- Restart the Django backend after changing `.env`.
+- If the suggestion modal shows `Analyse durch: Mock`, OpenAI was not used.
+- Common causes are `AI_PROVIDER=mock`, missing `OPENAI_API_KEY`, missing
+  `OPENAI_MODEL`, an OpenAI API error, or structured-output validation failure.
+- The modal shows a safe fallback reason when OpenAI was requested but mock
+  suggestions were used.
+- API keys are never logged or returned by the API.
 
 ## Demo Data
 

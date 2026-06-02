@@ -5,7 +5,12 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from applications.views import ApplicationViewSet
-from ai_services.views import CandidateDocumentViewSet, CandidateProfileView
+from ai_services.views import (
+    CandidateDocumentViewSet,
+    CandidateProfileSuggestionViewSet,
+    CandidateProfileSuggestFromDocumentsView,
+    CandidateProfileView,
+)
 from campaigns.views import SearchCampaignViewSet
 from jobs.views import JobPostingViewSet
 from mailcenter.views import EmailMessageViewSet
@@ -17,11 +22,21 @@ router.register("jobs", JobPostingViewSet, basename="job")
 router.register("applications", ApplicationViewSet, basename="application")
 router.register("mail/messages", EmailMessageViewSet, basename="mail-message")
 router.register("profile/documents", CandidateDocumentViewSet, basename="profile-document")
+router.register(
+    "profile/suggestions",
+    CandidateProfileSuggestionViewSet,
+    basename="profile-suggestion",
+)
 
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/dashboard/", include("ai_services.dashboard_urls")),
     path("api/profile/", CandidateProfileView.as_view(), name="candidate-profile"),
+    path(
+        "api/profile/suggest-from-documents/",
+        CandidateProfileSuggestFromDocumentsView.as_view(),
+        name="candidate-profile-suggest-from-documents",
+    ),
     path("api/mail/", include("mailcenter.urls")),
     path("api/", include(router.urls)),
 ]

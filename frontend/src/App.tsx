@@ -62,9 +62,13 @@ import {
   type EmailMessageDto,
 } from "./api/mail";
 import {
+  applyProfileSuggestion,
   deleteCandidateDocument,
+  dismissProfileSuggestion,
   getCandidateDocuments,
   getCandidateProfile,
+  reextractCandidateDocument,
+  suggestProfileFromDocuments,
   updateCandidateProfile,
   updateCandidateDocument,
   uploadCandidateDocument,
@@ -72,6 +76,7 @@ import {
   type CandidateDocumentType,
   type CandidateProfileDto,
   type CandidateProfilePayload,
+  type CandidateProfileSuggestionDto,
 } from "./api/profile";
 import {
   navigationItems,
@@ -834,9 +839,13 @@ function ProfilePage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [suggestingProfile, setSuggestingProfile] = useState(false);
+  const [suggestionSubmitting, setSuggestionSubmitting] = useState(false);
   const [uploadInputKey, setUploadInputKey] = useState(0);
   const [busyDocumentId, setBusyDocumentId] = useState<number | null>(null);
   const [selectedDocument, setSelectedDocument] = useState<CandidateDocumentDto | null>(null);
+  const [activeSuggestion, setActiveSuggestion] =
+    useState<CandidateProfileSuggestionDto | null>(null);
   const [documentTextMode, setDocumentTextMode] = useState<"view" | "edit">("view");
   const [notice, setNotice] = useState<Notice | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -946,6 +955,25 @@ function ProfilePage() {
     }
   }
 
+  async function handleReextractDocument(document: CandidateDocumentDto) {
+    setNotice(null);
+    setBusyDocumentId(document.id);
+    try {
+      const updatedDocument = await reextractCandidateDocument(document.id);
+      setDocuments((current) =>
+        current.map((item) => (item.id === updatedDocument.id ? updatedDocument : item)),
+      );
+      if (selectedDocument?.id === updatedDocument.id) {
+        setSelectedDocument(updatedDocument);
+      }
+      setNotice({ type: "success", text: "Textextraktion wurde erneut ausgeführt." });
+    } catch (error) {
+      setNotice({ type: "error", text: readableError(error) });
+    } finally {
+      setBusyDocumentId(null);
+    }
+  }
+
   async function handleSaveDocumentText(
     document: CandidateDocumentDto,
     payload: Pick<CandidateDocumentDto, "title" | "extracted_text" | "notes">,
@@ -959,11 +987,64 @@ function ProfilePage() {
       );
       setSelectedDocument(updatedDocument);
       setDocumentTextMode("view");
-      setNotice({ type: "success", text: "Extrahierter Text wurde gespeichert." });
+      setNotice({ type: "success", text: "Rohtext wurde gespeichert." });
     } catch (error) {
       setNotice({ type: "error", text: readableError(error) });
     } finally {
       setBusyDocumentId(null);
+    }
+  }
+
+  async function handleSuggestProfileFromDocuments() {
+    setNotice(null);
+    if (!documents.length) {
+      setNotice({
+        type: "error",
+        text: "Bitte lade zuerst Bewerbungsunterlagen hoch.",
+      });
+      return;
+    }
+    const contextDocuments = documents.filter((document) => document.use_for_ai_context);
+    const analysisDocuments = contextDocuments.length ? contextDocuments : documents;
+    setSuggestingProfile(true);
+    try {
+      const suggestion = await suggestProfileFromDocuments(
+        analysisDocuments.map((document) => document.id),
+      );
+      setActiveSuggestion(suggestion);
+    } catch (error) {
+      setNotice({ type: "error", text: readableError(error) });
+    } finally {
+      setSuggestingProfile(false);
+    }
+  }
+
+  async function handleApplyProfileSuggestion(suggestion: CandidateProfileSuggestionDto) {
+    setNotice(null);
+    setSuggestionSubmitting(true);
+    try {
+      await applyProfileSuggestion(suggestion.id);
+      setActiveSuggestion(null);
+      await loadProfile();
+      setNotice({ type: "success", text: "Profil wurde aus Unterlagen ergänzt." });
+    } catch (error) {
+      setNotice({ type: "error", text: readableError(error) });
+    } finally {
+      setSuggestionSubmitting(false);
+    }
+  }
+
+  async function handleDismissProfileSuggestion(suggestion: CandidateProfileSuggestionDto) {
+    setNotice(null);
+    setSuggestionSubmitting(true);
+    try {
+      await dismissProfileSuggestion(suggestion.id);
+      setActiveSuggestion(null);
+      setNotice({ type: "success", text: "Profilvorschlag wurde verworfen." });
+    } catch (error) {
+      setNotice({ type: "error", text: readableError(error) });
+    } finally {
+      setSuggestionSubmitting(false);
     }
   }
 
@@ -1126,13 +1207,27 @@ function ProfilePage() {
                   Bewerbungsunterlagen
                 </h2>
                 <p className="mt-1 text-sm text-slate-500">
-                  Lade Lebenslauf, Zertifikate oder Referenzen hoch. Nur bestätigter extrahierter Text wird für den KI-Kontext genutzt.
+                  Lade Lebenslauf, Zertifikate oder Referenzen hoch und erzeuge daraus prüfbare Profilvorschläge.
                 </p>
               </div>
-              <StatusBadge
-                label={`${documents.filter((document) => document.use_for_ai_context).length} für KI-Kontext`}
-                tone="blue"
-              />
+              <div className="flex items-center gap-3">
+                <StatusBadge
+                  label={`${documents.filter((document) => document.use_for_ai_context).length} für KI-Kontext`}
+                  tone="blue"
+                />
+                <button
+                  className="inline-flex h-10 items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 text-sm font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-70"
+                  disabled={suggestingProfile || !documents.length}
+                  onClick={handleSuggestProfileFromDocuments}
+                >
+                  {suggestingProfile ? (
+                    <Loader2 size={16} className="animate-spin" />
+                  ) : (
+                    <Sparkles size={16} />
+                  )}
+                  Profil aus Unterlagen analysieren
+                </button>
+              </div>
             </div>
             <form
               className="mt-5 grid grid-cols-[180px_1fr_1.2fr_auto] items-end gap-3 rounded-xl border border-slate-100 bg-slate-50 p-4"
@@ -1201,6 +1296,7 @@ function ProfilePage() {
                       setDocumentTextMode("edit");
                     }}
                     onToggleContext={() => handleToggleDocumentContext(document)}
+                    onReextract={() => handleReextractDocument(document)}
                     onDelete={() => handleDeleteDocument(document)}
                   />
                 ))
@@ -1248,6 +1344,15 @@ function ProfilePage() {
               onClose={() => setSelectedDocument(null)}
               onEdit={() => setDocumentTextMode("edit")}
               onSave={handleSaveDocumentText}
+            />
+          ) : null}
+          {activeSuggestion ? (
+            <ProfileSuggestionModal
+              suggestion={activeSuggestion}
+              submitting={suggestionSubmitting}
+              onApply={handleApplyProfileSuggestion}
+              onDismiss={handleDismissProfileSuggestion}
+              onClose={() => setActiveSuggestion(null)}
             />
           ) : null}
         </>
@@ -3838,6 +3943,7 @@ function CandidateDocumentCard({
   onView,
   onEdit,
   onToggleContext,
+  onReextract,
   onDelete,
 }: {
   document: CandidateDocumentDto;
@@ -3845,6 +3951,7 @@ function CandidateDocumentCard({
   onView: () => void;
   onEdit: () => void;
   onToggleContext: () => void;
+  onReextract: () => void;
   onDelete: () => void;
 }) {
   const statusTone = extractionStatusTone(document.extraction_status);
@@ -3868,8 +3975,15 @@ function CandidateDocumentCard({
             <span>·</span>
             <span>{formatFileSize(document.file_size)}</span>
             <span>·</span>
+            <span>{document.extracted_text_length} Zeichen verfügbar</span>
+            <span>·</span>
             <span>Aktualisiert {relativeDate(document.updated_at)}</span>
           </div>
+          {document.extraction_error ? (
+            <div className="mt-2 text-xs font-medium text-orange-700">
+              Hinweis: {document.extraction_error}
+            </div>
+          ) : null}
         </div>
         <label
           className={cn(
@@ -3894,14 +4008,22 @@ function CandidateDocumentCard({
           onClick={onView}
         >
           <FileText size={15} />
-          Text ansehen
+          Rohtext ansehen
         </button>
         <button
           className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-blue-700 hover:bg-blue-50"
           onClick={onEdit}
         >
           <PenLine size={15} />
-          Text bearbeiten
+          Rohtext bearbeiten
+        </button>
+        <button
+          className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60"
+          disabled={busy}
+          onClick={onReextract}
+        >
+          {busy ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
+          Diagnose: erneut extrahieren
         </button>
         <button
           className="inline-flex h-9 items-center gap-2 rounded-lg border border-rose-200 bg-white px-3 text-sm font-semibold text-rose-700 hover:bg-rose-50 disabled:opacity-60"
@@ -3951,10 +4073,11 @@ function CandidateDocumentTextModal({
         <div className="flex items-start justify-between gap-4">
           <div>
             <h2 className="text-xl font-bold tracking-[-0.02em]">
-              Extrahierter Text
+              Rohtext-Diagnose
             </h2>
             <p className="mt-1 text-sm text-slate-500">
-              {document.original_filename} · {extractionStatusLabel(document.extraction_status)}
+              {document.original_filename} · {extractionStatusLabel(document.extraction_status)} ·{" "}
+              {document.extracted_text_length} Zeichen verfügbar
             </p>
           </div>
           <button
@@ -3965,6 +4088,11 @@ function CandidateDocumentTextModal({
             <X size={20} />
           </button>
         </div>
+        {document.extraction_error ? (
+          <div className="mt-5 rounded-lg border border-orange-200 bg-orange-50 px-4 py-3 text-sm font-semibold text-orange-800">
+            {document.extraction_error}
+          </div>
+        ) : null}
         <label className="mt-6 block">
           <span className="text-xs font-bold text-slate-600">Titel</span>
           <input
@@ -3975,12 +4103,12 @@ function CandidateDocumentTextModal({
           />
         </label>
         <label className="mt-4 block">
-          <span className="text-xs font-bold text-slate-600">Extrahierter Text</span>
+          <span className="text-xs font-bold text-slate-600">Verfügbarer Rohtext</span>
           <textarea
             className="mt-1 min-h-[360px] w-full rounded-lg border border-slate-200 p-4 text-sm leading-6 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-50"
             value={text}
             disabled={!editable}
-            placeholder="Für diese Datei konnte kein Text extrahiert werden. Du kannst den Text manuell einfügen."
+            placeholder="Für diese Datei liegt kein auslesbarer Rohtext vor. Profilvorschläge können trotzdem aus Dokumentmetadaten und Notizen erzeugt werden."
             onChange={(event) => setText(event.target.value)}
           />
         </label>
@@ -4026,6 +4154,200 @@ function CandidateDocumentTextModal({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function ProfileSuggestionModal({
+  suggestion,
+  submitting,
+  onApply,
+  onDismiss,
+  onClose,
+}: {
+  suggestion: CandidateProfileSuggestionDto;
+  submitting: boolean;
+  onApply: (suggestion: CandidateProfileSuggestionDto) => void;
+  onDismiss: (suggestion: CandidateProfileSuggestionDto) => void;
+  onClose: () => void;
+}) {
+  const data = suggestion.suggested_data;
+  const meta = data._meta ?? {};
+  const providerLabel = meta.provider_used === "openai" ? "OpenAI" : "Mock";
+  return (
+    <div className="fixed inset-0 z-20 flex items-center justify-center bg-slate-950/35 px-4 py-8">
+      <div className="max-h-[92vh] w-full max-w-5xl overflow-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-xl font-bold tracking-[-0.02em]">
+              Profilvorschläge prüfen
+            </h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Die Vorschläge werden erst nach deiner Freigabe sicher in das Profil übernommen.
+            </p>
+          </div>
+          <button
+            type="button"
+            className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"
+            onClick={onClose}
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="mt-5 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-medium leading-6 text-blue-900">
+          Bestehende Profilfelder werden nicht blind überschrieben. Leere Felder werden gefüllt, Listen werden zusammengeführt und Zusammenfassungen werden nur ergänzt.
+        </div>
+        <div
+          className={cn(
+            "mt-4 rounded-xl border px-4 py-3 text-sm leading-6",
+            providerLabel === "Mock"
+              ? "border-orange-200 bg-orange-50 text-orange-900"
+              : "border-emerald-200 bg-emerald-50 text-emerald-900",
+          )}
+        >
+          <div className="font-bold">Analyse durch: {providerLabel}</div>
+          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 font-medium">
+            <span>Analysierte Dokumente: {meta.document_count ?? 0}</span>
+            <span>Verfügbare Textzeichen: {meta.source_text_length ?? 0}</span>
+            {meta.fallback_used ? (
+              <span>Fallback verwendet: {meta.fallback_reason || "nicht angegeben"}</span>
+            ) : null}
+          </div>
+          {providerLabel === "Mock" ? (
+            <div className="mt-2 text-xs font-semibold">
+              Diese Vorschläge stammen aus dem Mock-Modus und sind nur Demo-Daten. Prüfe deine AI_PROVIDER/OpenAI-Konfiguration für echte KI-Analyse.
+            </div>
+          ) : null}
+        </div>
+
+        <div className="mt-5 grid grid-cols-2 gap-4">
+          <SuggestionSection title="Persönliche Daten">
+            <SuggestionValue label="Name" value={data.full_name} />
+            <SuggestionValue label="E-Mail" value={data.email} />
+            <SuggestionValue label="Standort" value={data.location} />
+          </SuggestionSection>
+          <SuggestionSection title="Zielrollen">
+            <SuggestionList values={data.target_roles} />
+          </SuggestionSection>
+          <SuggestionSection title="Skills">
+            <SuggestionList values={data.skills} />
+          </SuggestionSection>
+          <SuggestionSection title="Tech Stack">
+            <SuggestionList values={data.tech_stack} />
+          </SuggestionSection>
+          <SuggestionSection title="Projekte">
+            <SuggestionList values={data.projects} />
+          </SuggestionSection>
+          <SuggestionSection title="Erfahrung">
+            <SuggestionParagraph value={data.experience_summary} />
+          </SuggestionSection>
+          <SuggestionSection title="Ausbildung">
+            <SuggestionParagraph value={data.education_summary} />
+          </SuggestionSection>
+          <SuggestionSection title="Stärken">
+            <SuggestionList values={data.strengths} />
+          </SuggestionSection>
+          <SuggestionSection title="Präferenzen">
+            <SuggestionValue label="Bevorzugte Standorte" value={data.preferred_locations.join(", ")} />
+            <SuggestionValue label="Remote-Präferenz" value={data.remote_preference} />
+            <SuggestionValue label="Gehaltsvorstellung" value={data.salary_expectation} />
+            <SuggestionValue label="Verfügbarkeit" value={data.availability} />
+          </SuggestionSection>
+          <SuggestionSection title="Bewerbungston">
+            <SuggestionParagraph value={data.application_tone} />
+          </SuggestionSection>
+          <SuggestionSection title="Ausschlüsse / No-Gos">
+            <SuggestionList values={data.no_gos} />
+          </SuggestionSection>
+          <SuggestionSection title="Zusatzkontext">
+            <SuggestionParagraph value={data.extra_context} />
+          </SuggestionSection>
+          <SuggestionSection title="Hinweise / Unsicherheiten">
+            <SuggestionList values={data.confidence_notes} />
+          </SuggestionSection>
+          <SuggestionSection title="Fehlende Informationen">
+            <SuggestionList values={data.missing_information} />
+          </SuggestionSection>
+        </div>
+
+        <div className="mt-6 flex justify-end gap-3 border-t border-slate-100 pt-5">
+          <button
+            className="h-10 rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60"
+            disabled={submitting}
+            onClick={onClose}
+          >
+            Abbrechen
+          </button>
+          <button
+            className="h-10 rounded-lg border border-rose-200 bg-white px-4 text-sm font-semibold text-rose-700 hover:bg-rose-50 disabled:opacity-60"
+            disabled={submitting}
+            onClick={() => onDismiss(suggestion)}
+          >
+            Verwerfen
+          </button>
+          <button
+            className="inline-flex h-10 items-center gap-2 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-70"
+            disabled={submitting}
+            onClick={() => onApply(suggestion)}
+          >
+            {submitting ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
+            Vorschläge übernehmen
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SuggestionSection({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+      <h3 className="text-sm font-bold text-slate-900">{title}</h3>
+      <div className="mt-3 space-y-2">{children}</div>
+    </section>
+  );
+}
+
+function SuggestionValue({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="text-[11px] font-bold uppercase text-slate-500">{label}</div>
+      <div className="mt-1 text-sm font-semibold text-slate-800">
+        {value || "Keine Angabe"}
+      </div>
+    </div>
+  );
+}
+
+function SuggestionParagraph({ value }: { value: string }) {
+  return (
+    <p className="text-sm leading-6 text-slate-700">
+      {value || "Keine belastbare Angabe gefunden."}
+    </p>
+  );
+}
+
+function SuggestionList({ values }: { values: string[] }) {
+  if (!values.length) {
+    return <div className="text-sm text-slate-500">Keine belastbare Angabe gefunden.</div>;
+  }
+  return (
+    <div className="flex flex-wrap gap-2">
+      {values.map((value) => (
+        <span
+          key={value}
+          className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+        >
+          {value}
+        </span>
+      ))}
     </div>
   );
 }

@@ -89,6 +89,53 @@ EMAIL_CLASSIFICATION_SCHEMA = {
     "required": ["classification", "requires_action"],
 }
 
+PROFILE_SUGGESTION_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "full_name": {"type": "string"},
+        "email": {"type": "string"},
+        "location": {"type": "string"},
+        "target_roles": {"type": "array", "items": {"type": "string"}},
+        "preferred_locations": {"type": "array", "items": {"type": "string"}},
+        "remote_preference": {"type": "string"},
+        "salary_expectation": {"type": "string"},
+        "availability": {"type": "string"},
+        "skills": {"type": "array", "items": {"type": "string"}},
+        "tech_stack": {"type": "array", "items": {"type": "string"}},
+        "projects": {"type": "array", "items": {"type": "string"}},
+        "experience_summary": {"type": "string"},
+        "education_summary": {"type": "string"},
+        "strengths": {"type": "array", "items": {"type": "string"}},
+        "no_gos": {"type": "array", "items": {"type": "string"}},
+        "application_tone": {"type": "string"},
+        "extra_context": {"type": "string"},
+        "confidence_notes": {"type": "array", "items": {"type": "string"}},
+        "missing_information": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "full_name",
+        "email",
+        "location",
+        "target_roles",
+        "preferred_locations",
+        "remote_preference",
+        "salary_expectation",
+        "availability",
+        "skills",
+        "tech_stack",
+        "projects",
+        "experience_summary",
+        "education_summary",
+        "strengths",
+        "no_gos",
+        "application_tone",
+        "extra_context",
+        "confidence_notes",
+        "missing_information",
+    ],
+}
+
 
 class OpenAIProvider:
     def __init__(self, api_key, model="", fallback_provider=None):
@@ -192,6 +239,30 @@ class OpenAIProvider:
                 exc_info=True,
             )
             return self.fallback_provider.classify_email_message(email)
+
+    def suggest_profile_from_documents(self, profile, documents):
+        if not self.model:
+            logger.warning("OPENAI_MODEL is missing; falling back to mock profile suggestions.")
+            return self._fallback_profile_suggestion(
+                profile,
+                documents,
+                "missing model",
+            )
+
+        try:
+            suggestion = self._suggest_profile_from_documents_with_openai(profile, documents)
+            suggestion["_meta"] = self._suggestion_meta("openai", documents)
+            return suggestion
+        except Exception:
+            logger.warning(
+                "OpenAI profile suggestion failed; falling back to mock provider.",
+                exc_info=True,
+            )
+            return self._fallback_profile_suggestion(
+                profile,
+                documents,
+                "OpenAI API or structured output validation error",
+            )
 
     def _get_client(self):
         if self._client is None:
@@ -346,6 +417,57 @@ class OpenAIProvider:
         )
         return self._validate_email_classification_payload(json.loads(content))
 
+    def _suggest_profile_from_documents_with_openai(self, profile, documents):
+        content = self._create_structured_json(
+            schema_name="candidate_profile_suggestion",
+            schema=PROFILE_SUGGESTION_SCHEMA,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Du analysierst Bewerbungsunterlagen und schlägst Ergänzungen "
+                        "für ein Kandidatenprofil vor. Antworte ausschließlich als JSON "
+                        "gemäß Schema. Schreibe auf Deutsch, wo es sinnvoll ist. "
+                        "Erfinde keine Fakten, Abschlüsse, Arbeitgeber, Zertifikate, "
+                        "Erfahrung oder Präferenzen. Unsichere Informationen gehören in "
+                        "confidence_notes oder missing_information. Leere Felder sind erlaubt. "
+                        "Achte besonders auf Kontaktbereiche, Seitenleisten, Kopfzeilen, "
+                        "mehrspaltige Layouts und uneinheitliche Reihenfolge im extrahierten "
+                        "CV-Text. Ausbildung und Berufserfahrung müssen extrahiert werden, "
+                        "wenn sie im Dokument belegt sind."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "current_profile": self._profile_payload(profile),
+                            "documents": self._documents_payload(documents),
+                            "instructions": (
+                                "Extrahiere strukturierte Kandidatenprofil-Daten aus CVs, "
+                                "Zertifikaten, Referenzen und Bewerbungsdokumenten. Suche nach "
+                                "Name, E-Mail, Telefonnummer, Standort/Adresse, Zielrollen, "
+                                "Skills, Tech Stack, Projekten, Berufserfahrung, Ausbildung, "
+                                "Stärken, Bewerbungston und expliziten No-Gos. Telefonnummern "
+                                "kommen in extra_context. CVs können mehrspaltig sein; nutze den "
+                                "gesamten extrahierten Text auch bei ungewöhnlicher Reihenfolge. "
+                                "Erzeuge Vorschläge, die ein Mensch prüfen und übernehmen kann. "
+                                "Keine automatischen Überschreibungen annehmen. Erfinde keine "
+                                "nicht belegten Fakten; fehlende Informationen leer lassen oder "
+                                "in missing_information nennen."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+        )
+        return self._validate_profile_suggestion_payload(json.loads(content))
+
+    def _fallback_profile_suggestion(self, profile, documents, reason):
+        self.fallback_provider.fallback_reason = reason
+        return self.fallback_provider.suggest_profile_from_documents(profile, documents)
+
     def _candidate_profile_payload(self):
         return get_candidate_profile_payload()
 
@@ -389,6 +511,60 @@ class OpenAIProvider:
             "risks": match.risks or [],
             "recommendation": match.recommendation,
             "application_angle": match.application_angle,
+        }
+
+    def _profile_payload(self, profile):
+        if not profile:
+            return {}
+        return {
+            "full_name": profile.full_name,
+            "email": profile.email,
+            "location": profile.location,
+            "target_roles": profile.target_roles or [],
+            "preferred_locations": profile.preferred_locations or [],
+            "remote_preference": profile.remote_preference,
+            "salary_expectation": profile.salary_expectation,
+            "availability": profile.availability,
+            "skills": profile.skills or [],
+            "tech_stack": profile.tech_stack or [],
+            "projects": profile.projects or [],
+            "experience_summary": profile.experience_summary,
+            "education_summary": profile.education_summary,
+            "strengths": profile.strengths or [],
+            "no_gos": profile.no_gos or [],
+            "application_tone": profile.application_tone,
+            "extra_context": profile.extra_context,
+        }
+
+    def _documents_payload(self, documents):
+        payload = []
+        for document in documents:
+            text = (document.extracted_text or "").strip()
+            payload.append(
+                {
+                    "id": document.id,
+                    "title": document.title,
+                    "document_type": document.document_type,
+                    "original_filename": document.original_filename,
+                    "extraction_status": document.extraction_status,
+                    "extraction_error": document.extraction_error,
+                    "notes": document.notes,
+                    "has_extracted_text": bool(text),
+                    "extracted_text": text[:8000],
+                }
+            )
+        return payload
+
+    def _suggestion_meta(self, provider_used, documents, fallback_reason=""):
+        source_text_length = sum(
+            len((document.extracted_text or "").strip()) for document in documents
+        )
+        return {
+            "provider_used": provider_used,
+            "fallback_used": bool(fallback_reason),
+            "fallback_reason": fallback_reason,
+            "source_text_length": source_text_length,
+            "document_count": len(documents),
         }
 
     def _validate_job_match_payload(self, payload):
@@ -480,6 +656,46 @@ class OpenAIProvider:
             "classification": classification,
             "requires_action": requires_action,
         }
+
+    def _validate_profile_suggestion_payload(self, payload):
+        if not isinstance(payload, dict):
+            raise ValueError("OpenAI profile suggestion response is not an object.")
+
+        string_fields = [
+            "full_name",
+            "email",
+            "location",
+            "remote_preference",
+            "salary_expectation",
+            "availability",
+            "experience_summary",
+            "education_summary",
+            "application_tone",
+            "extra_context",
+        ]
+        list_fields = [
+            "target_roles",
+            "preferred_locations",
+            "skills",
+            "tech_stack",
+            "projects",
+            "strengths",
+            "no_gos",
+            "confidence_notes",
+            "missing_information",
+        ]
+        cleaned = {}
+        for field in string_fields:
+            value = payload.get(field, "")
+            if not isinstance(value, str):
+                raise ValueError(f"OpenAI profile suggestion {field} must be a string.")
+            cleaned[field] = value.strip()
+        for field in list_fields:
+            value = payload.get(field, [])
+            if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+                raise ValueError(f"OpenAI profile suggestion {field} must be a string array.")
+            cleaned[field] = [item.strip() for item in value if item.strip()]
+        return cleaned
 
     def _next_document_version(self, application, document_type):
         latest = (

@@ -51,11 +51,54 @@ export type CandidateDocumentDto = {
   content_type: string;
   file_size: number;
   extracted_text: string;
+  extracted_text_length: number;
+  extraction_error: string;
   extraction_status: CandidateDocumentExtractionStatus;
   use_for_ai_context: boolean;
   notes: string;
   created_at: string;
   updated_at: string;
+};
+
+export type CandidateProfileSuggestionData = {
+  full_name: string;
+  email: string;
+  location: string;
+  target_roles: string[];
+  preferred_locations: string[];
+  remote_preference: string;
+  salary_expectation: string;
+  availability: string;
+  skills: string[];
+  tech_stack: string[];
+  projects: string[];
+  experience_summary: string;
+  education_summary: string;
+  strengths: string[];
+  no_gos: string[];
+  application_tone: string;
+  extra_context: string;
+  confidence_notes: string[];
+  missing_information: string[];
+  _meta?: {
+    provider_used?: "mock" | "openai" | string;
+    fallback_used?: boolean;
+    fallback_reason?: string;
+    source_text_length?: number;
+    document_count?: number;
+  };
+};
+
+export type CandidateProfileSuggestionDto = {
+  id: number;
+  profile: number | null;
+  source_documents: CandidateDocumentDto[];
+  source_document_ids: number[];
+  suggested_data: CandidateProfileSuggestionData;
+  status: "draft" | "applied" | "dismissed";
+  created_at: string;
+  updated_at: string;
+  applied_at: string | null;
 };
 
 export type UploadCandidateDocumentPayload = {
@@ -115,6 +158,44 @@ export function deleteCandidateDocument(documentId: number) {
   return apiRequest<void>(`/api/profile/documents/${documentId}/`, {
     method: "DELETE",
   });
+}
+
+export function reextractCandidateDocument(documentId: number) {
+  return apiRequest<CandidateDocumentDto>(
+    `/api/profile/documents/${documentId}/reextract/`,
+    { method: "POST" },
+  );
+}
+
+export function suggestProfileFromDocuments(documentIds?: number[]) {
+  return apiRequest<CandidateProfileSuggestionDto>("/api/profile/suggest-from-documents/", {
+    method: "POST",
+    body: documentIds?.length ? { document_ids: documentIds } : {},
+  });
+}
+
+export function getProfileSuggestions() {
+  return apiRequest<CandidateProfileSuggestionDto[]>("/api/profile/suggestions/");
+}
+
+export function getProfileSuggestion(suggestionId: number) {
+  return apiRequest<CandidateProfileSuggestionDto>(
+    `/api/profile/suggestions/${suggestionId}/`,
+  );
+}
+
+export function applyProfileSuggestion(suggestionId: number) {
+  return apiRequest<CandidateProfileSuggestionDto>(
+    `/api/profile/suggestions/${suggestionId}/apply/`,
+    { method: "POST" },
+  );
+}
+
+export function dismissProfileSuggestion(suggestionId: number) {
+  return apiRequest<CandidateProfileSuggestionDto>(
+    `/api/profile/suggestions/${suggestionId}/dismiss/`,
+    { method: "POST" },
+  );
 }
 
 async function multipartRequest<T>(path: string, options: RequestInit): Promise<T> {

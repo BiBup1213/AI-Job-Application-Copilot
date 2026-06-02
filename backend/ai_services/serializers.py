@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
 from .document_extraction import MAX_UPLOAD_SIZE, is_supported_document
-from .models import CandidateDocument, CandidateProfile
+from .models import CandidateDocument, CandidateProfile, CandidateProfileSuggestion
 
 
 class CandidateProfileSerializer(serializers.ModelSerializer):
@@ -64,6 +64,8 @@ class CandidateDocumentSerializer(serializers.ModelSerializer):
             "content_type",
             "file_size",
             "extracted_text",
+            "extracted_text_length",
+            "extraction_error",
             "extraction_status",
             "use_for_ai_context",
             "notes",
@@ -77,6 +79,8 @@ class CandidateDocumentSerializer(serializers.ModelSerializer):
             "original_filename",
             "content_type",
             "file_size",
+            "extracted_text_length",
+            "extraction_error",
             "extraction_status",
             "created_at",
             "updated_at",
@@ -115,8 +119,17 @@ class CandidateDocumentSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
-        if "extracted_text" in validated_data and validated_data["extracted_text"].strip():
-            validated_data["extraction_status"] = CandidateDocument.ExtractionStatus.SUCCESS
+        if "extracted_text" in validated_data:
+            text = validated_data["extracted_text"].strip()
+            validated_data["extracted_text_length"] = len(text)
+            if text:
+                validated_data["extraction_status"] = CandidateDocument.ExtractionStatus.SUCCESS
+                validated_data["extraction_error"] = ""
+            else:
+                validated_data["extraction_status"] = (
+                    CandidateDocument.ExtractionStatus.UNSUPPORTED
+                )
+                validated_data["extraction_error"] = "Kein extrahierter Text vorhanden."
         return super().update(instance, validated_data)
 
     def get_file_url(self, obj):
@@ -125,3 +138,36 @@ class CandidateDocumentSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         url = obj.file.url
         return request.build_absolute_uri(url) if request else url
+
+
+class CandidateProfileSuggestionSerializer(serializers.ModelSerializer):
+    source_documents = CandidateDocumentSerializer(many=True, read_only=True)
+    source_document_ids = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CandidateProfileSuggestion
+        fields = [
+            "id",
+            "profile",
+            "source_documents",
+            "source_document_ids",
+            "suggested_data",
+            "status",
+            "created_at",
+            "updated_at",
+            "applied_at",
+        ]
+        read_only_fields = [
+            "id",
+            "profile",
+            "source_documents",
+            "source_document_ids",
+            "suggested_data",
+            "status",
+            "created_at",
+            "updated_at",
+            "applied_at",
+        ]
+
+    def get_source_document_ids(self, obj):
+        return list(obj.source_documents.values_list("id", flat=True))

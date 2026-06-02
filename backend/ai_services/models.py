@@ -61,6 +61,8 @@ class CandidateDocument(models.Model):
     content_type = models.CharField(max_length=120, blank=True)
     file_size = models.PositiveIntegerField(default=0)
     extracted_text = models.TextField(blank=True)
+    extracted_text_length = models.PositiveIntegerField(default=0)
+    extraction_error = models.CharField(max_length=255, blank=True)
     extraction_status = models.CharField(
         max_length=20,
         choices=ExtractionStatus.choices,
@@ -76,3 +78,38 @@ class CandidateDocument(models.Model):
 
     def __str__(self):
         return self.title
+
+
+class CandidateProfileSuggestion(models.Model):
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        APPLIED = "applied", "Applied"
+        DISMISSED = "dismissed", "Dismissed"
+
+    profile = models.ForeignKey(
+        CandidateProfile,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="suggestions",
+    )
+    source_documents = models.ManyToManyField(
+        CandidateDocument,
+        blank=True,
+        related_name="profile_suggestions",
+    )
+    suggested_data = models.JSONField(default=dict, blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.DRAFT,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    applied_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self):
+        return f"Profilvorschlag #{self.pk}"

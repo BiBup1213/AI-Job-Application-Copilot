@@ -13,3 +13,6 @@ class AIProvider(Protocol):
 
     def classify_email_message(self, email):
         ...
+
+    def suggest_profile_from_documents(self, profile, documents):
+        ...

@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import CandidateDocument, CandidateProfile
+from .models import CandidateDocument, CandidateProfile, CandidateProfileSuggestion
 
 
 @admin.register(CandidateProfile)
@@ -17,6 +17,7 @@ class CandidateDocumentAdmin(admin.ModelAdmin):
         "document_type",
         "original_filename",
         "extraction_status",
+        "extracted_text_length",
         "use_for_ai_context",
         "updated_at",
     )
@@ -26,6 +27,16 @@ class CandidateDocumentAdmin(admin.ModelAdmin):
         "original_filename",
         "content_type",
         "file_size",
+        "extracted_text_length",
+        "extraction_error",
         "created_at",
         "updated_at",
     )
+
+
+@admin.register(CandidateProfileSuggestion)
+class CandidateProfileSuggestionAdmin(admin.ModelAdmin):
+    list_display = ("id", "profile", "status", "created_at", "applied_at")
+    list_filter = ("status",)
+    readonly_fields = ("created_at", "updated_at", "applied_at")
+    filter_horizontal = ("source_documents",)

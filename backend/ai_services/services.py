@@ -6,6 +6,7 @@ from django.db.models import Count, Q
 from django.utils import timezone
 
 from applications.models import Application
+from ai_services.models import CandidateProfile
 from ai_services.providers.mock import APPLICATION_ANGLE, MockAIProvider
 from ai_services.providers.openai_provider import OpenAIProvider
 from jobs.models import JobMatch, JobPosting
@@ -32,6 +33,7 @@ def get_provider():
     provider_name = getattr(settings, "AI_PROVIDER", "mock").strip().lower()
     if provider_name == "mock":
         _provider = get_mock_provider()
+        _provider.fallback_reason = ""
         return _provider
 
     if provider_name == "openai":
@@ -41,7 +43,7 @@ def get_provider():
                 "AI_PROVIDER=openai configured but OPENAI_API_KEY is missing; "
                 "falling back to mock provider."
             )
-            _provider = get_mock_provider()
+            _provider = _mock_provider_with_reason("missing API key")
             return _provider
         try:
             _provider = OpenAIProvider(
@@ -55,15 +57,21 @@ def get_provider():
                 "OpenAI provider initialization failed; falling back to mock provider.",
                 exc_info=True,
             )
-            _provider = get_mock_provider()
+            _provider = _mock_provider_with_reason("OpenAI provider initialization failed")
             return _provider
 
     logger.warning(
         "Unsupported AI_PROVIDER '%s'; falling back to mock provider.",
         provider_name,
     )
-    _provider = get_mock_provider()
+    _provider = _mock_provider_with_reason(f"unsupported AI_PROVIDER '{provider_name}'")
     return _provider
+
+
+def _mock_provider_with_reason(reason):
+    provider = get_mock_provider()
+    provider.fallback_reason = reason
+    return provider
 
 
 def _call_provider(method_name, *args):
@@ -78,7 +86,8 @@ def _call_provider(method_name, *args):
             method_name,
             exc_info=True,
         )
-        return getattr(get_mock_provider(), method_name)(*args)
+        fallback_provider = _mock_provider_with_reason(f"{method_name} provider error")
+        return getattr(fallback_provider, method_name)(*args)
 
 
 def evaluate_job_match(job):
@@ -95,6 +104,80 @@ def generate_follow_up_document(application):
 
 def classify_email_message(email):
     return _call_provider("classify_email_message", email)
+
+
+def suggest_profile_from_documents(profile, documents):
+    return _call_provider("suggest_profile_from_documents", profile, documents)
+
+
+def apply_profile_suggestion(suggestion):
+    profile = suggestion.profile or CandidateProfile.objects.first() or CandidateProfile.objects.create()
+    data = suggestion.suggested_data or {}
+    list_fields = [
+        "target_roles",
+        "preferred_locations",
+        "skills",
+        "tech_stack",
+        "projects",
+        "strengths",
+        "no_gos",
+    ]
+    scalar_fields = [
+        "full_name",
+        "email",
+        "location",
+        "remote_preference",
+        "salary_expectation",
+        "availability",
+        "application_tone",
+    ]
+    append_text_fields = ["experience_summary", "education_summary", "extra_context"]
+
+    for field in list_fields:
+        merged = _merge_list(getattr(profile, field, []) or [], data.get(field, []))
+        setattr(profile, field, merged)
+
+    for field in scalar_fields:
+        current = getattr(profile, field, "")
+        suggestion_value = data.get(field, "")
+        if not current and isinstance(suggestion_value, str) and suggestion_value.strip():
+            setattr(profile, field, suggestion_value.strip())
+
+    for field in append_text_fields:
+        current = getattr(profile, field, "")
+        suggestion_value = data.get(field, "")
+        if isinstance(suggestion_value, str) and suggestion_value.strip():
+            setattr(profile, field, _append_unique_text(current, suggestion_value.strip()))
+
+    profile.save()
+    suggestion.profile = profile
+    suggestion.status = suggestion.Status.APPLIED
+    suggestion.applied_at = timezone.now()
+    suggestion.save(update_fields=["profile", "status", "applied_at", "updated_at"])
+    return profile
+
+
+def _merge_list(current, suggested):
+    values = []
+    seen = set()
+    for value in [*current, *suggested]:
+        if not isinstance(value, str):
+            value = str(value)
+        normalized = value.strip()
+        key = normalized.lower()
+        if normalized and key not in seen:
+            values.append(normalized)
+            seen.add(key)
+    return values
+
+
+def _append_unique_text(current, suggestion_value):
+    current = current or ""
+    if suggestion_value.lower() in current.lower():
+        return current
+    if not current.strip():
+        return suggestion_value
+    return f"{current.rstrip()}\n\n{suggestion_value}"
 
 
 def suggest_next_actions():
