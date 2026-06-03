@@ -31,6 +31,7 @@ def get_provider():
         return _provider
 
     provider_name = getattr(settings, "AI_PROVIDER", "mock").strip().lower()
+    logger.debug("AI provider selected from settings: %s", provider_name or "mock")
     if provider_name == "mock":
         _provider = get_mock_provider()
         _provider.fallback_reason = ""
@@ -43,9 +44,13 @@ def get_provider():
                 "AI_PROVIDER=openai configured but OPENAI_API_KEY is missing; "
                 "falling back to mock provider."
             )
-            _provider = _mock_provider_with_reason("missing API key")
+            _provider = _mock_provider_with_reason("OPENAI_API_KEY missing")
             return _provider
         try:
+            logger.debug(
+                "Initializing OpenAI provider with model=%s",
+                getattr(settings, "OPENAI_MODEL", "") or "<missing>",
+            )
             _provider = OpenAIProvider(
                 api_key=api_key,
                 model=getattr(settings, "OPENAI_MODEL", ""),

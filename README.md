@@ -78,6 +78,32 @@ The sidebar uses React Router routes for Übersicht, Suchkampagnen, Gefundene Jo
 - Candidate document upload for CVs, certificates, references, templates, and other application material with local text extraction where possible.
 - AI-assisted profile suggestions from uploaded documents with explicit review and safe apply behavior.
 
+## Screenshots
+
+### Bewerber-Dashboard
+
+![Bewerber-Dashboard](docs/screenshots/dashboard.png)
+
+### Gefundene Jobs
+
+![Gefundene Jobs](docs/screenshots/jobs.png)
+
+### Bewerbungen
+
+![Bewerbungen](docs/screenshots/applications.png)
+
+### Mail-Zentrale
+
+![Mail-Zentrale](docs/screenshots/mail-center.png)
+
+### Follow-ups
+
+![Follow-ups](docs/screenshots/follow-ups.png)
+
+### Profil
+
+![Profil](docs/screenshots/profile.png)
+
 ## Not Implemented Yet
 
 - No real Gmail API integration.
@@ -249,6 +275,9 @@ OpenAI usage is optional and disabled by default.
    pip install -r requirements.txt
    ```
 
+   The OpenAI provider requires `openai>=1.40.0` for structured JSON output
+   support used by this MVP.
+
 2. Set local `.env` values:
 
    ```text
@@ -269,6 +298,16 @@ OpenAI usage is optional and disabled by default.
    `POST /api/mail/messages/{id}/classify/` from the frontend flow or an API
    client.
 
+4. Test provider configuration directly:
+
+   ```bash
+   python manage.py test_ai_provider
+   ```
+
+   This prints the selected provider, whether OpenAI config is detected,
+   whether fallback was used, the safe fallback reason, and a few extracted
+   profile suggestion fields from a sample CV-like text.
+
 Job matching, application document generation, follow-up drafting, and profile
 suggestions send the stored candidate profile, selected extracted document text,
 and job or application context to OpenAI only when `AI_PROVIDER=openai`. Email
@@ -280,8 +319,11 @@ Troubleshooting profile suggestions:
 
 - Restart the Django backend after changing `.env`.
 - If the suggestion modal shows `Analyse durch: Mock`, OpenAI was not used.
+- Run `python manage.py test_ai_provider` from `backend/` to inspect the
+  selected provider and fallback reason.
 - Common causes are `AI_PROVIDER=mock`, missing `OPENAI_API_KEY`, missing
-  `OPENAI_MODEL`, an OpenAI API error, or structured-output validation failure.
+  `OPENAI_MODEL`, an outdated or missing OpenAI SDK, an OpenAI API error, no
+  output text, a JSON parse error, or structured-output validation failure.
 - The modal shows a safe fallback reason when OpenAI was requested but mock
   suggestions were used.
 - API keys are never logged or returned by the API.

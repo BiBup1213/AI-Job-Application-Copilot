@@ -12,6 +12,28 @@ from .mock import MockAIProvider
 logger = logging.getLogger(__name__)
 
 
+class OpenAIProviderError(Exception):
+    pass
+
+
+class OpenAIAPIRequestError(OpenAIProviderError):
+    pass
+
+
+class StructuredOutputParseError(OpenAIProviderError):
+    pass
+
+
+class StructuredOutputValidationError(OpenAIProviderError):
+    def __init__(self, field_name, message):
+        self.field_name = field_name
+        super().__init__(message)
+
+
+class NoOutputTextError(OpenAIProviderError):
+    pass
+
+
 JOB_MATCH_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -246,23 +268,41 @@ class OpenAIProvider:
             return self._fallback_profile_suggestion(
                 profile,
                 documents,
-                "missing model",
+                "OPENAI_MODEL missing",
             )
+
+        logger.debug(
+            "OpenAI profile suggestion requested with model=%s, documents=%s, source_text_length=%s",
+            self.model,
+            len(documents),
+            self._source_text_length(documents),
+        )
 
         try:
             suggestion = self._suggest_profile_from_documents_with_openai(profile, documents)
             suggestion["_meta"] = self._suggestion_meta("openai", documents)
             return suggestion
-        except Exception:
+        except OpenAIAPIRequestError as exc:
+            reason = str(exc)
+        except NoOutputTextError as exc:
+            reason = str(exc)
+        except StructuredOutputParseError as exc:
+            reason = str(exc)
+        except StructuredOutputValidationError as exc:
+            reason = f"Structured output validation failed: {exc.field_name}"
+        except Exception as exc:
+            reason = f"OpenAI profile suggestion error: {exc.__class__.__name__}"
             logger.warning(
-                "OpenAI profile suggestion failed; falling back to mock provider.",
+                "OpenAI profile suggestion failed with unexpected error; falling back to mock provider.",
                 exc_info=True,
             )
-            return self._fallback_profile_suggestion(
-                profile,
-                documents,
-                "OpenAI API or structured output validation error",
-            )
+            return self._fallback_profile_suggestion(profile, documents, reason)
+
+        logger.warning(
+            "OpenAI profile suggestion failed; falling back to mock provider. reason=%s",
+            reason,
+        )
+        return self._fallback_profile_suggestion(profile, documents, reason)
 
     def _get_client(self):
         if self._client is None:
@@ -303,7 +343,7 @@ class OpenAIProvider:
                 },
             ],
         )
-        return self._validate_job_match_payload(json.loads(content))
+        return self._validate_job_match_payload(self._parse_structured_json(content))
 
     def _generate_application_documents_with_openai(self, application):
         job = application.job
@@ -337,7 +377,7 @@ class OpenAIProvider:
                 },
             ],
         )
-        return self._validate_application_documents_payload(json.loads(content))
+        return self._validate_application_documents_payload(self._parse_structured_json(content))
 
     def _generate_follow_up_document_with_openai(self, application):
         job = application.job
@@ -376,7 +416,7 @@ class OpenAIProvider:
                 },
             ],
         )
-        return self._validate_document_payload(json.loads(content), "follow_up")
+        return self._validate_document_payload(self._parse_structured_json(content), "follow_up")
 
     def _classify_email_with_openai(self, email):
         content = self._create_structured_json(
@@ -415,7 +455,7 @@ class OpenAIProvider:
                 },
             ],
         )
-        return self._validate_email_classification_payload(json.loads(content))
+        return self._validate_email_classification_payload(self._parse_structured_json(content))
 
     def _suggest_profile_from_documents_with_openai(self, profile, documents):
         content = self._create_structured_json(
@@ -462,9 +502,14 @@ class OpenAIProvider:
                 },
             ],
         )
-        return self._validate_profile_suggestion_payload(json.loads(content))
+        return self._validate_profile_suggestion_payload(self._parse_structured_json(content))
 
     def _fallback_profile_suggestion(self, profile, documents, reason):
+        logger.debug(
+            "Using mock fallback for profile suggestions. reason=%s, source_text_length=%s",
+            reason,
+            self._source_text_length(documents),
+        )
         self.fallback_provider.fallback_reason = reason
         return self.fallback_provider.suggest_profile_from_documents(profile, documents)
 
@@ -472,22 +517,72 @@ class OpenAIProvider:
         return get_candidate_profile_payload()
 
     def _create_structured_json(self, schema_name, schema, messages):
-        completion = self._get_client().chat.completions.create(
-            model=self.model,
-            messages=messages,
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": schema_name,
-                    "strict": True,
-                    "schema": schema,
-                },
-            },
+        logger.debug(
+            "Calling OpenAI structured output. model=%s, schema=%s",
+            self.model,
+            schema_name,
         )
-        content = completion.choices[0].message.content
-        if not content:
-            raise ValueError("OpenAI response did not include JSON content.")
+        try:
+            completion = self._get_client().chat.completions.create(
+                model=self.model,
+                messages=messages,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": schema_name,
+                        "strict": True,
+                        "schema": schema,
+                    },
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "OpenAI structured output request failed. schema=%s, exception=%s",
+                schema_name,
+                exc.__class__.__name__,
+            )
+            raise OpenAIAPIRequestError(self._safe_api_error(exc)) from exc
+
+        try:
+            message = completion.choices[0].message
+        except (AttributeError, IndexError, TypeError) as exc:
+            raise NoOutputTextError("No output text returned") from exc
+
+        refusal = getattr(message, "refusal", None)
+        if refusal:
+            raise NoOutputTextError("No output text returned: model refusal")
+
+        content = getattr(message, "content", None)
+        if isinstance(content, list):
+            content = "".join(
+                part.get("text", "") if isinstance(part, dict) else getattr(part, "text", "")
+                for part in content
+            )
+        if not isinstance(content, str) or not content.strip():
+            raise NoOutputTextError("No output text returned")
         return content
+
+    def _parse_structured_json(self, content):
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise StructuredOutputParseError(
+                f"Structured output parse error: {self._safe_exception_detail(exc)}"
+            ) from exc
+
+    def _safe_exception_detail(self, exc):
+        message = str(exc).replace("\n", " ").strip()
+        if self.api_key:
+            message = message.replace(self.api_key, "[redacted]")
+        if len(message) > 180:
+            message = message[:177] + "..."
+        return f"{exc.__class__.__name__}: {message}" if message else exc.__class__.__name__
+
+    def _safe_api_error(self, exc):
+        return f"OpenAI API error: {self._safe_exception_detail(exc)}"
+
+    def _source_text_length(self, documents):
+        return sum(len((document.extracted_text or "").strip()) for document in documents)
 
     def _job_payload(self, job):
         return {
@@ -556,14 +651,11 @@ class OpenAIProvider:
         return payload
 
     def _suggestion_meta(self, provider_used, documents, fallback_reason=""):
-        source_text_length = sum(
-            len((document.extracted_text or "").strip()) for document in documents
-        )
         return {
             "provider_used": provider_used,
             "fallback_used": bool(fallback_reason),
             "fallback_reason": fallback_reason,
-            "source_text_length": source_text_length,
+            "source_text_length": self._source_text_length(documents),
             "document_count": len(documents),
         }
 
@@ -659,7 +751,10 @@ class OpenAIProvider:
 
     def _validate_profile_suggestion_payload(self, payload):
         if not isinstance(payload, dict):
-            raise ValueError("OpenAI profile suggestion response is not an object.")
+            raise StructuredOutputValidationError(
+                "root",
+                "OpenAI profile suggestion response is not an object.",
+            )
 
         string_fields = [
             "full_name",
@@ -686,15 +781,43 @@ class OpenAIProvider:
         ]
         cleaned = {}
         for field in string_fields:
-            value = payload.get(field, "")
-            if not isinstance(value, str):
-                raise ValueError(f"OpenAI profile suggestion {field} must be a string.")
-            cleaned[field] = value.strip()
+            cleaned[field] = self._profile_string_value(payload, field)
         for field in list_fields:
-            value = payload.get(field, [])
-            if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-                raise ValueError(f"OpenAI profile suggestion {field} must be a string array.")
-            cleaned[field] = [item.strip() for item in value if item.strip()]
+            cleaned[field] = self._profile_string_list(payload, field)
+        return cleaned
+
+    def _profile_string_value(self, payload, field):
+        value = payload.get(field, "")
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            raise StructuredOutputValidationError(
+                field,
+                f"OpenAI profile suggestion {field} must be a string.",
+            )
+        return value.strip()
+
+    def _profile_string_list(self, payload, field):
+        value = payload.get(field, [])
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise StructuredOutputValidationError(
+                field,
+                f"OpenAI profile suggestion {field} must be a string array.",
+            )
+        cleaned = []
+        for item in value:
+            if item is None:
+                continue
+            if not isinstance(item, str):
+                raise StructuredOutputValidationError(
+                    field,
+                    f"OpenAI profile suggestion {field} must be a string array.",
+                )
+            stripped = item.strip()
+            if stripped:
+                cleaned.append(stripped)
         return cleaned
 
     def _next_document_version(self, application, document_type):
